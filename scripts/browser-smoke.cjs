@@ -20,7 +20,12 @@ const platformToken = crypto.randomBytes(32).toString('base64url');
 const password = crypto.randomBytes(24).toString('base64url');
 const pageErrors = [];
 const completed = [];
-let daemon, browser, proxy, origin, control;
+let daemon, browser, proxy, origin, control, issuer;
+let issuerOrigin, issuerMode = 'valid', lastAccessToken = '', tokenExchanges = 0;
+const authorizationCodes = new Map();
+const signingKey = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+const unrelatedKey = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+const publicJWK = { ...signingKey.publicKey.export({ format: 'jwk' }), kid: 'browser-smoke-key', alg: 'RS256', use: 'sig' };
 let stage = 'startup';
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -40,7 +45,7 @@ async function unusedPort() {
 
 function serve(request, response) {
   const pathname = new URL(request.url, origin).pathname;
-  if (/^\/(api|health|console|setup)(\/|$)/.test(pathname)) {
+  if (/^\/(api|health|console|setup|oidc)(\/|$)/.test(pathname) || pathname.startsWith('/register/')) {
     const upstream = http.request(control + request.url, {
       method: request.method, headers: { ...request.headers, host: new URL(origin).host },
     }, (result) => { response.writeHead(result.statusCode, result.headers); result.pipe(response); });
@@ -57,6 +62,59 @@ function serve(request, response) {
   const extension = path.extname(asset);
   response.writeHead(200, { 'Content-Type': extension === '.js' ? 'application/javascript' : extension === '.css' ? 'text/css' : 'text/html; charset=utf-8' });
   fs.createReadStream(asset).pipe(response);
+}
+
+// 隔离的 OIDC 提供方真实签发 RSA ID Token，并校验固定回调、PKCE 和一次性授权码。
+// 它不是生产身份缓存，不会连接公网提供方，也不输出任何凭据。
+async function serveIssuer(request, response) {
+  const endpoint = new URL(request.url, issuerOrigin);
+  const json = (status, body) => { response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(body)); };
+  if (endpoint.pathname === '/.well-known/openid-configuration') {
+    json(200, { issuer: issuerOrigin, authorization_endpoint: issuerOrigin + '/authorize', token_endpoint: issuerOrigin + '/token',
+      jwks_uri: issuerOrigin + '/jwks', response_types_supported: ['code'], subject_types_supported: ['public'],
+      id_token_signing_alg_values_supported: ['RS256'], code_challenge_methods_supported: ['S256'] });
+    return;
+  }
+  if (endpoint.pathname === '/jwks') { json(200, { keys: [publicJWK] }); return; }
+  if (endpoint.pathname === '/authorize') {
+    const query = endpoint.searchParams;
+    if (query.get('client_id') !== 'browser-smoke' || query.get('redirect_uri') !== origin + '/oidc/callback/smoke-oidc' || query.get('code_challenge_method') !== 'S256' || !query.get('state') || !query.get('nonce') || !query.get('code_challenge')) { json(400, { error: 'invalid_request' }); return; }
+    const code = crypto.randomBytes(32).toString('base64url');
+    authorizationCodes.set(code, { nonce: query.get('nonce'), challenge: query.get('code_challenge'),
+      redirect: query.get('redirect_uri'), mode: issuerMode, expires: Date.now() + 60000 });
+    const callback = new URL(query.get('redirect_uri'));
+    callback.searchParams.set('code', code);
+    callback.searchParams.set('state', query.get('state'));
+    const callbackLink = callback.href.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
+    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    response.end(`<html lang="zh-CN"><body><a href="${callbackLink}">确认登录</a></body></html>`);
+    return;
+  }
+  if (endpoint.pathname === '/token' && request.method === 'POST') {
+    request.setTimeout(5000, () => request.destroy());
+    let body = '';
+    for await (const chunk of request) { body += chunk; if (body.length > 8192) { json(413, { error: 'invalid_request' }); return; } }
+    const values = new URLSearchParams(body);
+    const code = values.get('code');
+    const authorization = authorizationCodes.get(code);
+    const challenge = crypto.createHash('sha256').update(values.get('code_verifier') || '').digest('base64url');
+    if (!authorization || authorization.expires <= Date.now() || values.get('grant_type') !== 'authorization_code' ||
+      authorization.redirect !== values.get('redirect_uri') || authorization.challenge !== challenge) { json(400, { error: 'invalid_grant' }); return; }
+    authorizationCodes.delete(code);
+    const now = Math.floor(Date.now() / 1000);
+    const claims = { iss: issuerOrigin, aud: 'browser-smoke', sub: 'browser-smoke-subject', iat: now, exp: now + 120,
+      nonce: authorization.mode === 'nonce' ? 'wrong-nonce' : authorization.nonce, email: 'same-email@example.invalid', name: 'OIDC 验收成员' };
+    const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: publicJWK.kid, typ: 'JWT' })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify(claims)).toString('base64url');
+    const unsigned = `${header}.${payload}`;
+    const key = authorization.mode === 'signature' ? unrelatedKey.privateKey : signingKey.privateKey;
+    const signature = crypto.sign('RSA-SHA256', Buffer.from(unsigned), key).toString('base64url');
+    lastAccessToken = crypto.randomBytes(32).toString('base64url');
+    tokenExchanges++;
+    json(200, { token_type: 'Bearer', access_token: lastAccessToken, expires_in: 120, id_token: `${unsigned}.${signature}` });
+    return;
+  }
+  json(404, { error: 'not_found' });
 }
 
 async function api(endpoint, credential, body, method = 'POST') {
@@ -78,12 +136,18 @@ async function main() {
   proxy = http.createServer(serve);
   await new Promise((resolve) => proxy.listen(0, 'localhost', resolve));
   origin = `http://localhost:${proxy.address().port}`;
+  issuer = http.createServer((request, response) => {
+    serveIssuer(request, response).catch(() => { if (!response.headersSent) response.writeHead(500); response.end(); });
+  });
+  await new Promise((resolve) => issuer.listen(0, '127.0.0.1', resolve));
+  issuerOrigin = `http://127.0.0.1:${issuer.address().port}`;
   const controlPort = await unusedPort();
   control = `http://127.0.0.1:${controlPort}`;
   const log = fs.openSync(path.join(state, 'daemon.log'), 'a', 0o600);
   // 只创建隔离的临时租户；凭据在进程内生成，经请求正文或环境传递，不出现在参数或输出。
   daemon = spawn(binary, ['-listen', `127.0.0.1:${controlPort}`, '-grpc-listen', '127.0.0.1:0',
-    '-server-url', origin, '-state-dir', state, '-plans', 'builtin', '-network-pool', '100.100.0.0/16', '-log-level', 'error'], {
+    '-server-url', origin, '-state-dir', state, '-plans', 'builtin', '-network-pool', '100.100.0.0/16', '-log-level', 'error',
+    '-oidc-issuer', issuerOrigin, '-oidc-client-id', 'browser-smoke', '-oidc-id', 'smoke-oidc', '-allow-local-login'], {
     env: { ...process.env, XUNARA_PLATFORM_ADMIN_TOKEN: platformToken }, stdio: ['ignore', log, log],
   });
   fs.closeSync(log);
@@ -100,7 +164,7 @@ async function main() {
     method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(10000),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ token: fs.readFileSync(path.join(state, 'setup-token'), 'utf8').trim(),
-      _csrf: formToken, login: 'consolesmoke', display_name: '浏览器验收', email: '', password, confirm: password }),
+      _csrf: formToken, login: 'consolesmoke', display_name: '浏览器验收', email: 'same-email@example.invalid', password, confirm: password }),
   });
   assert.equal(initialized.status, 302);
   const allocation = await api('/api/platform/v1/organizations/default/plan/allocate', platformToken, {});
@@ -305,7 +369,7 @@ async function main() {
   await ownerSelect.waitFor();
   assert.equal(await ownerSelect.isDisabled(), true);
   const actualUsers = await userContext.request.get(origin + '/api/v1/users').then((response) => response.json());
-  const memberFixture = { id: 2, loginName: 'member-smoke', displayName: '权限验收成员', email: '', role: 'viewer' };
+  const memberFixture = { id: 2, loginName: 'member-smoke', displayName: '权限验收成员', email: '', role: 'member' };
   // 注入一条展示夹具和写入故障，只验收 UI 取消/失败回滚，不冒充真实服务端改角色。
   await userPage.route('**/api/v1/users', (route) => route.fulfill({ status: 200, contentType: 'application/json',
     body: JSON.stringify({ users: [...actualUsers.users, memberFixture] }) }));
@@ -320,12 +384,12 @@ async function main() {
   userPage.once('dialog', (dialog) => dialog.dismiss());
   await memberSelect.selectOption('admin');
   assert.equal(roleWrites, 0);
-  assert.equal(await memberSelect.inputValue(), 'viewer');
+  assert.equal(await memberSelect.inputValue(), 'member');
   userPage.once('dialog', (dialog) => dialog.accept());
   await memberSelect.selectOption('admin');
   await userPage.getByText('角色更新失败（验收注入）', { exact: true }).waitFor();
   assert.equal(roleWrites, 1);
-  assert.equal(await memberSelect.inputValue(), 'viewer');
+  assert.equal(await memberSelect.inputValue(), 'member');
   await userPage.unroute('**/api/v1/users/2');
   await userPage.unroute('**/api/v1/users');
   await userPage.route(snapshotPattern, async (route) => {
@@ -349,6 +413,149 @@ async function main() {
   await userPage.getByRole('button', { name: '刷新', exact: true }).click();
   await userPage.locator('tbody tr').filter({ hasText: 'consolesmoke' }).waitFor();
   assert.equal(await userPage.getByRole('alert').count(), 0);
+
+  mark('free-member-quota-keeps-owner-login');
+  await userPage.reload();
+  await userPage.getByRole('button', { name: '创建成员邀请', exact: true }).click();
+  const memberQuotaDenial = userPage.waitForResponse((response) => response.url().endsWith('/api/v1/member-invitations') && response.status() === 403);
+  await userPage.getByRole('button', { name: '生成一次性邀请码', exact: true }).click();
+  await memberQuotaDenial;
+  await userPage.getByRole('alert').filter({ hasText: '成员数量已达上限，请升级套餐' }).waitFor();
+  assert.equal(userPage.url(), origin + '/members');
+  await userPage.getByRole('button', { name: '取消', exact: true }).click();
+  assert.equal((await api('/api/platform/v1/organizations/default/plan', platformToken, { plan_id: 'pro' }, 'PATCH')).status, 200);
+
+  mark('member-invitation-created-once-without-url-or-storage-secret');
+  await userPage.reload();
+  await userPage.getByRole('button', { name: '创建成员邀请', exact: true }).click();
+  await userPage.getByLabel('邀请备注', { exact: true }).fill('受邀浏览器成员');
+  await userPage.getByRole('button', { name: '生成一次性邀请码', exact: true }).click();
+  const inviteCode = await userPage.getByLabel('一次性邀请码', { exact: true }).inputValue();
+  assert.equal(inviteCode.startsWith('xunara_invite_'), true);
+  await assertSecretNotStored(userPage, inviteCode);
+  assert.equal(await userPage.getByLabel('注册页面（不含邀请码）', { exact: true }).inputValue(), origin + '/register');
+  await userPage.getByRole('button', { name: '关闭并清除代码', exact: true }).click();
+  assert.equal(await userPage.getByLabel('一次性邀请码', { exact: true }).count(), 0);
+  assert.equal((await userPage.content()).includes(inviteCode), false);
+
+  mark('invited-browser-joins-existing-tenant-and-cannot-manage-invites');
+  const invitedContext = await browser.newContext();
+  const invitedPage = await invitedContext.newPage();
+  invitedPage.on('pageerror', (error) => pageErrors.push(error.name));
+  await invitedPage.goto(origin + '/register');
+  await invitedPage.getByLabel('邀请码', { exact: true }).fill(inviteCode);
+  await invitedPage.getByLabel('登录名', { exact: true }).fill('browser-invited-member');
+  await invitedPage.getByLabel('密码', { exact: true }).fill(password);
+  await invitedPage.getByRole('button', { name: '注册并登录', exact: true }).click();
+  await invitedPage.waitForURL('**/dashboard');
+  const invitedSnapshot = await invitedContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json());
+  assert.equal(invitedSnapshot.user.role, 'member');
+  assert.equal(invitedSnapshot.tenant.id, 'default');
+  const deniedInvitations = await invitedContext.request.get(origin + '/api/v1/member-invitations');
+  assert.equal(deniedInvitations.status(), 403);
+  await invitedPage.goto(origin + '/members');
+  assert.equal(await invitedPage.getByRole('button', { name: '创建成员邀请', exact: true }).count(), 0);
+  await userPage.getByRole('button', { name: '刷新邀请', exact: true }).click();
+  await userPage.locator('tbody tr').filter({ hasText: '受邀浏览器成员' }).getByText('已使用', { exact: true }).waitFor();
+  const replay = await fetch(origin + '/api/v1/auth/signup', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ invite: inviteCode, login: 'browser-replayed-member', password }), signal: AbortSignal.timeout(10000) });
+  assert.equal(replay.status, 403);
+
+  mark('invitation-revoke-cancellation-failure-and-real-revocation');
+  await userPage.getByRole('button', { name: '创建成员邀请', exact: true }).click();
+  await userPage.getByLabel('邀请备注', { exact: true }).fill('待撤销邀请');
+  await userPage.getByRole('button', { name: '生成一次性邀请码', exact: true }).click();
+  await userPage.getByLabel('一次性邀请码', { exact: true }).waitFor();
+  await userPage.getByRole('button', { name: '关闭并清除代码', exact: true }).click();
+  const invitationRow = userPage.locator('tbody tr').filter({ hasText: '待撤销邀请' });
+  userPage.once('dialog', (dialog) => dialog.dismiss());
+  await invitationRow.getByRole('button', { name: '撤销', exact: true }).click();
+  assert.equal(await invitationRow.count(), 1);
+  await userPage.route('**/api/v1/member-invitations/*', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'INVITATIONS_UNAVAILABLE: injected outage' }) }));
+  userPage.once('dialog', (dialog) => dialog.accept());
+  await invitationRow.getByRole('button', { name: '撤销', exact: true }).click();
+  await userPage.getByText('暂时无法读取或管理邀请，请稍后重试', { exact: false }).waitFor();
+  assert.equal(await invitationRow.count(), 1);
+  await userPage.unroute('**/api/v1/member-invitations/*');
+  userPage.once('dialog', (dialog) => dialog.accept());
+  await invitationRow.getByRole('button', { name: '撤销', exact: true }).click();
+  await invitationRow.waitFor({ state: 'detached' });
+
+  mark('invitation-read-outage-does-not-invent-empty-list');
+  await userPage.route('**/api/v1/member-invitations', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'INVITATIONS_UNAVAILABLE: injected outage' }) }));
+  await userPage.getByRole('button', { name: '刷新邀请', exact: true }).click();
+  await userPage.getByRole('alert').filter({ hasText: '暂时无法读取或管理邀请' }).waitFor();
+  assert.equal(await userPage.getByText('还没有成员邀请', { exact: true }).count(), 0);
+  await userPage.unroute('**/api/v1/member-invitations');
+  await userPage.getByRole('button', { name: '刷新邀请', exact: true }).click();
+  await userPage.locator('tbody tr').filter({ hasText: '受邀浏览器成员' }).waitFor();
+  await userPage.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await userPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+
+  mark('real-oidc-through-spa-preserves-target-and-rejects-stolen-binding-state-replay');
+  const oidcContext = await browser.newContext();
+  const oidcPage = await oidcContext.newPage();
+  oidcPage.on('pageerror', (error) => pageErrors.push(error.name));
+  const unboundContext = await browser.newContext();
+  await oidcPage.goto(origin + '/login?return_to=' + encodeURIComponent('/security?tab=sessions#current'));
+  const oidcLink = oidcPage.getByRole('link', { name: '使用 smoke-oidc 登录', exact: true });
+  assert.equal(new URL(await oidcLink.getAttribute('href'), origin).pathname, '/api/v1/auth/start');
+  await oidcLink.click();
+  // 在提供方确认页停住，而不是依赖 Playwright 对 302 链中间请求的路由拦截。
+  const authorizationLink = oidcPage.getByRole('link', { name: '确认登录', exact: true });
+  const callbackURL = await authorizationLink.getAttribute('href');
+  const authBinding = (await oidcContext.cookies(origin)).find((cookie) => cookie.name === 'xunara_auth');
+  assert.equal(!!authBinding, true);
+  assert.equal((await unboundContext.request.get(callbackURL, { maxRedirects: 0 })).status(), 400);
+  const tampered = new URL(callbackURL);
+  tampered.searchParams.set('state', 'wrong-state');
+  const exchangesBeforeValidation = tokenExchanges;
+  assert.equal((await oidcContext.request.get(tampered.href, { maxRedirects: 0 })).status(), 403);
+  assert.equal(tokenExchanges, exchangesBeforeValidation);
+  await authorizationLink.click();
+  await oidcPage.waitForURL(origin + '/security?tab=sessions#current');
+  const oidcSnapshot = await oidcContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json());
+  assert.equal(oidcSnapshot.user.role, 'member');
+  assert.notEqual(oidcSnapshot.user.id, 1);
+  assert.equal(oidcSnapshot.user.email, 'same-email@example.invalid');
+  await assertSecretNotStored(oidcPage, lastAccessToken);
+  const exchangesBeforeReplay = tokenExchanges;
+  assert.equal((await unboundContext.request.get(callbackURL, { maxRedirects: 0, headers: { Cookie: `${authBinding.name}=${authBinding.value}` } })).status(), 400);
+  assert.equal(tokenExchanges, exchangesBeforeReplay);
+
+  mark('real-oidc-preserves-backend-device-authorization-target');
+  const deviceContext = await browser.newContext();
+  const devicePage = await deviceContext.newPage();
+  devicePage.on('pageerror', (error) => pageErrors.push(error.name));
+  await devicePage.goto(origin + '/login?return_to=' + encodeURIComponent('/register/oidc-browser-target'));
+  await devicePage.getByRole('link', { name: '使用 smoke-oidc 登录', exact: true }).click();
+  const deviceResponse = devicePage.waitForResponse((response) => new URL(response.url()).pathname === '/register/oidc-browser-target');
+  await devicePage.getByRole('link', { name: '确认登录', exact: true }).click();
+  assert.equal((await deviceResponse).status(), 404);
+  await devicePage.waitForURL(origin + '/register/oidc-browser-target');
+
+  mark('real-oidc-rejects-invalid-rsa-signature-and-nonce');
+  for (const mode of ['signature', 'nonce']) {
+    issuerMode = mode;
+    const rejectedContext = await browser.newContext();
+    const rejectedPage = await rejectedContext.newPage();
+    await rejectedPage.goto(origin + '/login');
+    await rejectedPage.getByRole('link', { name: '使用 smoke-oidc 登录', exact: true }).click();
+    const rejectedCallback = rejectedPage.waitForResponse((response) => new URL(response.url()).pathname === '/oidc/callback/smoke-oidc');
+    await rejectedPage.getByRole('link', { name: '确认登录', exact: true }).click();
+    assert.equal((await rejectedCallback).status(), 403);
+    assert.equal((await rejectedContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json())).authenticated, false);
+    await rejectedContext.close();
+  }
+  issuerMode = 'valid';
+  mark('legacy-oidc-bookmark-forwards-to-the-same-api-flow');
+  const legacyContext = await browser.newContext();
+  const legacyPage = await legacyContext.newPage();
+  legacyPage.on('pageerror', (error) => pageErrors.push(error.name));
+  await legacyPage.goto(origin + '/login?provider=smoke-oidc&return_to=' + encodeURIComponent('/security?legacy=1'));
+  await legacyPage.getByRole('link', { name: '确认登录', exact: true }).click();
+  await legacyPage.waitForURL(origin + '/security?legacy=1');
+  assert.equal((await legacyContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json())).authenticated, true);
   assert.equal(pageErrors.length, 0);
   console.log(JSON.stringify({ passed: true, stages: completed, javascript_errors: pageErrors.length, fixture: 'isolated ephemeral tenant' }));
 }
@@ -361,6 +568,7 @@ main().catch((error) => {
 }).finally(async () => {
   if (browser) await browser.close();
   if (proxy) { proxy.closeAllConnections(); await new Promise((resolve) => proxy.close(resolve)); }
+  if (issuer) { issuer.closeAllConnections(); await new Promise((resolve) => issuer.close(resolve)); }
   if (daemon && daemon.exitCode === null) {
     const exited = new Promise((resolve) => daemon.once('exit', resolve));
     daemon.kill('SIGTERM');

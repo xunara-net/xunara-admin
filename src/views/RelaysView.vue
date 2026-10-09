@@ -1,45 +1,241 @@
 <script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref } from "vue";
+import * as ep from "../api/endpoints";
+import { errorMessage } from "../api/client";
+import type { Organization, PlatformRelay, RelayDesiredState, RelayEnrollment, RelayVisibility } from "../api/types";
+import { admin } from "../store";
 import PageHeader from "../components/PageHeader.vue";
+import DataTable from "../components/DataTable.vue";
+import ModalDialog from "../components/ModalDialog.vue";
+import { formatTime, relativeTime } from "../utils/format";
+import { bandwidthText, bytesText, filterRelays, parseBandwidth, relayStatus, relayStatuses } from "../utils/relays";
 
-// Relay management becomes a live console once xunara-server implements the
-// relay platform endpoints (contract: xunara-relay/docs/relay-protocol.md).
-// Until then this page states the model and the state of the implementation
-// instead of showing an empty table.
-const phases = [
-  { title: "中继注册与身份", desc: "一次性 Enrollment Token 换取长期 Relay Identity（xunara-relay 已实现客户端）", state: "客户端就绪" },
-  { title: "中继列表与状态", desc: "在线 / 降级 / 维护 / 已撤销，以及区域、线路与版本", state: "服务端进行中" },
-  { title: "远程配置与灰度", desc: "带宽限速、区域改名、配置版本回滚与灰度升级", state: "规划中" },
-  { title: "流量统计与计费", desc: "按方向统计（不识别内容），套餐关联与成本核算", state: "规划中" },
-];
+const loading = ref(true);
+const error = ref("");
+const relays = ref<PlatformRelay[]>([]);
+const organizations = ref<Organization[]>([]);
+const organizationFilter = ref("");
+const statusFilter = ref("");
+const keyword = ref("");
+const busy = ref(false);
+const actionError = ref("");
+const visibleRelays = computed(() => filterRelays(relays.value, organizationFilter.value, statusFilter.value, keyword.value));
+
+const enrollmentOpen = ref(false);
+const enrollmentForm = ref({ organizationID: "", name: "", visibility: "private" as RelayVisibility, hours: 24 });
+const enrollment = ref<RelayEnrollment | null>(null);
+const editing = ref<PlatformRelay | null>(null);
+const configForm = ref({ desiredState: "online" as RelayDesiredState, bandwidth: "0", regionName: "" });
+const visibilityLabels = { private: "私有", organization: "组织内", public: "公共" };
+
+onMounted(load);
+onUnmounted(() => { enrollment.value = null; });
+
+async function load() {
+  loading.value = true;
+  error.value = "";
+  try {
+    const [relayList, organizationList] = await Promise.all([ep.listRelays(), ep.listOrganizations()]);
+    relays.value = relayList;
+    organizations.value = organizationList;
+  } catch (failure) {
+    error.value = errorMessage(failure);
+  } finally {
+    loading.value = false;
+  }
+}
+
+function openEnrollment() {
+  enrollmentForm.value = { organizationID: organizationFilter.value || organizations.value[0]?.id || "", name: "", visibility: "private", hours: 24 };
+  enrollment.value = null;
+  actionError.value = "";
+  enrollmentOpen.value = true;
+}
+
+function closeEnrollment() {
+  if (busy.value) return;
+  // 注册密钥只在本次弹窗内存中展示，关闭或离开页面即清除，不进入浏览器存储。
+  enrollment.value = null;
+  enrollmentOpen.value = false;
+}
+
+async function createEnrollment() {
+  if (busy.value || enrollment.value) return;
+  const form = enrollmentForm.value;
+  if (!form.organizationID || !Number.isInteger(form.hours) || form.hours < 1 || form.hours > 720) {
+    actionError.value = "请选择租户，有效期须为 1 至 720 小时的整数";
+    return;
+  }
+  busy.value = true;
+  actionError.value = "";
+  try {
+    const answer = await ep.createRelayEnrollment(form.organizationID, {
+      name: form.name.trim(), visibility: form.visibility, ttl_seconds: form.hours * 3600,
+    });
+    if (!answer?.token || !answer.item) throw new Error("注册令牌响应不完整，请联系管理员检查");
+    enrollment.value = answer;
+  } catch (failure) {
+    actionError.value = errorMessage(failure);
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function copyEnrollment() {
+  if (!enrollment.value) return;
+  try {
+    if (!navigator.clipboard) throw new Error("当前连接不支持安全剪贴板，请手动复制令牌");
+    await navigator.clipboard.writeText(enrollment.value.token);
+    admin.toast("success", "已复制，请仅粘贴到受保护的中继配置中");
+  } catch {
+    actionError.value = "无法访问安全剪贴板，请手动复制令牌";
+  }
+}
+
+function openConfig(relay: PlatformRelay) {
+  editing.value = relay;
+  configForm.value = { desiredState: relay.desiredState, bandwidth: String(relay.bandwidthLimit), regionName: relay.regionName ?? "" };
+  actionError.value = "";
+}
+
+function closeConfig() {
+  if (!busy.value) editing.value = null;
+}
+
+async function saveConfig() {
+  const relay = editing.value;
+  if (!relay || busy.value) return;
+  actionError.value = "";
+  let bandwidth: number;
+  try {
+    bandwidth = parseBandwidth(configForm.value.bandwidth);
+  } catch (failure) {
+    actionError.value = errorMessage(failure);
+    return;
+  }
+  const nextState = configForm.value.desiredState;
+  if (nextState !== relay.desiredState && nextState !== "online" &&
+      !window.confirm(`将中继「${relay.name}」设为${relayStatuses[nextState].label}？这可能中断使用它的连接。`)) return;
+  busy.value = true;
+  try {
+    const updated = await ep.updateRelay(relay.organizationId, relay.id, {
+      desired_state: nextState, bandwidth_limit: bandwidth, region_name: configForm.value.regionName.trim(),
+    });
+    relays.value = relays.value.map((item) => item.organizationId === relay.organizationId && item.id === relay.id
+      ? { ...updated, organizationName: relay.organizationName } : item);
+    editing.value = null;
+    admin.toast("success", "期望配置已保存，中继在后续心跳获取配置");
+  } catch (failure) {
+    actionError.value = errorMessage(failure);
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function removeRelay(relay: PlatformRelay) {
+  if (busy.value || !window.confirm(`删除中继「${relay.name}」？其长期身份将失效，恢复需要重新注册。`)) return;
+  busy.value = true;
+  try {
+    await ep.deleteRelay(relay.organizationId, relay.id);
+    relays.value = relays.value.filter((item) => item.organizationId !== relay.organizationId || item.id !== relay.id);
+    admin.toast("success", "中继已删除，其后续心跳将被拒绝");
+  } catch (failure) {
+    admin.toast("error", errorMessage(failure));
+  } finally {
+    busy.value = false;
+  }
+}
 </script>
 
 <template>
-  <PageHeader title="中继管理" desc="Xunara Relay 是独立数据平面：DERP/STUN 中继、限速与健康状态。" />
+  <PageHeader title="中继管理" desc="管理各租户注册的中继：一次性接入、心跳状态和远程期望配置。">
+    <template #actions>
+      <button class="btn" :disabled="loading || busy" @click="load">刷新</button>
+      <button class="btn primary" :disabled="loading || !!error || busy || !organizations.length" @click="openEnrollment">创建注册令牌</button>
+    </template>
+  </PageHeader>
 
-  <div class="card">
-    <div class="card-head"><h2>中继平台路线</h2><span class="hint">契约见 xunara-relay/docs/relay-protocol.md</span></div>
-    <div class="card-body">
-      <div v-for="phase in phases" :key="phase.title" style="display: flex; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border)">
-        <div>
-          <div style="font-weight: 600">{{ phase.title }}</div>
-          <div style="color: var(--text-muted); font-size: 12.5px; margin-top: 4px">{{ phase.desc }}</div>
-        </div>
-        <span class="badge" :class="phase.state === '客户端就绪' ? 'success' : phase.state === '服务端进行中' ? 'warning' : ''">{{ phase.state }}</span>
+  <div class="alert info relay-notice">此处只列出注册到平台的托管中继。静态 DERP map 中的公共中继不在本列表，列表为空不代表网络没有中继。</div>
+  <div v-if="error" class="alert error relay-notice" role="alert">加载失败：{{ error }} <button class="btn small" :disabled="loading" @click="load">重试</button></div>
+
+  <div v-if="!error" class="card">
+    <div class="card-head"><h2>托管中继（{{ visibleRelays.length }} / {{ relays.length }}）</h2><span class="hint">状态以最近一次心跳为准</span></div>
+    <div class="card-body relay-filters">
+      <input v-model="keyword" class="input" aria-label="搜索中继" placeholder="搜索名称、区域、主机或租户" />
+      <select v-model="organizationFilter" class="select" aria-label="筛选租户">
+        <option value="">全部租户</option>
+        <option v-for="organization in organizations" :key="organization.id" :value="organization.id">{{ organization.name }}（{{ organization.id }}）</option>
+      </select>
+      <select v-model="statusFilter" class="select" aria-label="筛选中继状态">
+        <option value="">全部状态</option>
+        <option v-for="(status, key) in relayStatuses" :key="key" :value="key">{{ status.label }}</option>
+      </select>
+    </div>
+    <DataTable :columns="[
+      { key: 'name', title: '中继 / 区域' }, { key: 'organizationId', title: '租户' },
+      { key: 'status', title: '状态' }, { key: 'metrics', title: '心跳报告' },
+      { key: 'lastSeen', title: '最近心跳' }, { key: 'actions', title: '操作', align: 'right' },
+    ]" :rows="visibleRelays" :loading="loading" :row-key="(row) => `${row.organizationId}:${row.id}`"
+      :empty-title="relays.length ? '没有匹配的中继' : '尚未注册托管中继'"
+      empty-desc="可调整筛选条件，或创建一次性注册令牌后在服务器启动 xunara-relay。">
+      <template #cell-name="{ row }">
+        <div>{{ row.name }} <span class="badge">{{ visibilityLabels[row.visibility as RelayVisibility] || row.visibility }}</span></div>
+        <div class="hint">{{ row.regionName || row.regionCode || '未设置区域' }} · {{ row.version || '版本未上报' }}</div>
+        <div class="mono hint">{{ row.hostname || row.id }}</div>
+      </template>
+      <template #cell-organizationId="{ row }"><div>{{ row.organizationName || row.organizationId }}</div><div class="mono hint">{{ row.organizationId }}</div></template>
+      <template #cell-status="{ row }"><span class="badge" :class="relayStatuses[relayStatus(row)].tone">{{ relayStatuses[relayStatus(row)].label }}</span></template>
+      <template #cell-metrics="{ row }">
+        <div v-if="row.lastSeen">连接 {{ row.connectedClients ?? '—' }} · 接收 {{ bytesText(row.bytesIn) }} / 发送 {{ bytesText(row.bytesOut) }}</div>
+        <div v-else class="hint">尚无心跳报告</div>
+        <div class="hint">配置 v{{ row.configVersion }} · {{ bandwidthText(row.bandwidthLimit) }}</div>
+      </template>
+      <template #cell-lastSeen="{ row }"><span :title="formatTime(row.lastSeen)">{{ relativeTime(row.lastSeen) }}</span></template>
+      <template #cell-actions="{ row }"><div class="row-actions">
+        <button class="btn small" :disabled="busy || loading" @click="openConfig(row)">配置</button>
+        <button class="btn small danger" :disabled="busy || loading" @click="removeRelay(row)">删除</button>
+      </div></template>
+    </DataTable>
+  </div>
+
+  <ModalDialog title="创建中继注册令牌" :open="enrollmentOpen" @close="closeEnrollment">
+    <div v-if="actionError" class="alert error relay-notice" role="alert">{{ actionError }}</div>
+    <template v-if="enrollment">
+      <div class="alert warning relay-notice">令牌只显示本次、只能注册一台中继。关闭后不能再次查看；不要放入网址、命令参数、日志或公开仓库。</div>
+      <div class="field"><label for="relay-enrollment-secret">一次性注册令牌</label><textarea id="relay-enrollment-secret" class="input mono" :value="enrollment.token" readonly spellcheck="false" autocomplete="off" rows="3" /></div>
+      <p class="hint">到期：{{ formatTime(enrollment.item.expiresAt) }}。请写入权限为 0600 的配置文件，通过环境变量读取。</p>
+      <p class="hint">启动参数使用 <code>-enroll-token-env XUNARA_RELAY_TOKEN</code>，不要把实际令牌填进参数。</p>
+    </template>
+    <template v-else>
+      <div class="field"><label for="relay-enrollment-org">所属租户</label><select id="relay-enrollment-org" v-model="enrollmentForm.organizationID" class="select" :disabled="busy"><option v-for="organization in organizations" :key="organization.id" :value="organization.id">{{ organization.name }}（{{ organization.id }}）</option></select></div>
+      <div class="field"><label for="relay-enrollment-name">中继名称</label><input id="relay-enrollment-name" v-model="enrollmentForm.name" class="input" :disabled="busy" placeholder="例如：上海电信 01" maxlength="128" /></div>
+      <div class="grid cols-2">
+        <div class="field"><label for="relay-enrollment-visibility">可见范围</label><select id="relay-enrollment-visibility" v-model="enrollmentForm.visibility" class="select" :disabled="busy"><option v-for="(label, visibility) in visibilityLabels" :key="visibility" :value="visibility">{{ label }}</option></select></div>
+        <div class="field"><label for="relay-enrollment-hours">有效期（小时）</label><input id="relay-enrollment-hours" v-model.number="enrollmentForm.hours" class="input" :disabled="busy" type="number" min="1" max="720" step="1" /></div>
       </div>
-    </div>
-  </div>
+      <div class="alert info">实际接入仍受所属租户的中继额度限制。创建令牌本身不代表中继已经在线。</div>
+    </template>
+    <template #footer>
+      <button class="btn" :disabled="busy" @click="closeEnrollment">{{ enrollment ? '完成并清除令牌' : '取消' }}</button>
+      <button v-if="enrollment" class="btn primary" @click="copyEnrollment">复制令牌</button>
+      <button v-else class="btn primary" :disabled="busy || !enrollmentForm.organizationID" @click="createEnrollment">{{ busy ? '正在创建…' : '生成一次性令牌' }}</button>
+    </template>
+  </ModalDialog>
 
-  <div class="card">
-    <div class="card-head"><h2>部署一台托管中继</h2></div>
-    <div class="card-body">
-      <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 10px">
-        在目标服务器上安装 xunara-relay，用平台签发的注册令牌启动：
-      </p>
-      <pre class="mono" style="background: var(--surface-2); padding: 14px; border-radius: 8px; overflow-x: auto; margin: 0">export XUNARA_RELAY_TOKEN='enroll-...'
-xunara-relay -listen :443 -hostname hk1.example.com \
-  -control-url https://control.example.com \
-  -enroll-token-env XUNARA_RELAY_TOKEN \
-  -cert-mode letsencrypt -cert-dir /var/lib/xunara-relay</pre>
-    </div>
-  </div>
+  <ModalDialog :title="`配置中继：${editing?.name || ''}`" :open="!!editing" @close="closeConfig">
+    <div v-if="actionError" class="alert error relay-notice" role="alert">{{ actionError }}</div>
+    <p class="hint relay-notice">所属租户：{{ editing?.organizationId }} · 当前配置版本：{{ editing?.configVersion }}</p>
+    <div class="field"><label for="relay-config-state">期望状态</label><select id="relay-config-state" v-model="configForm.desiredState" class="select" :disabled="busy"><option value="online">正常服务</option><option value="maintenance">维护中</option><option value="disabled">停用</option><option value="revoked">撤销</option></select></div>
+    <div class="field"><label for="relay-config-region">区域显示名</label><input id="relay-config-region" v-model="configForm.regionName" class="input" :disabled="busy" maxlength="128" /></div>
+    <div class="field"><label for="relay-config-bandwidth">每连接限速（字节/秒）</label><input id="relay-config-bandwidth" v-model="configForm.bandwidth" class="input" :disabled="busy" type="number" min="-1" step="1" /><div class="help">-1：不限速；0：使用中继本地配置；正数：每连接的字节速率。</div></div>
+    <div class="alert warning">保存的是期望配置，中继在后续心跳获取。离线节点不会立即应用；心跳统计不是计费账单。</div>
+    <template #footer><button class="btn" :disabled="busy" @click="closeConfig">取消</button><button class="btn primary" :disabled="busy" @click="saveConfig">{{ busy ? '正在保存…' : '保存配置' }}</button></template>
+  </ModalDialog>
 </template>
+
+<style scoped>
+.relay-notice { margin-bottom: 16px; }
+.relay-filters { display: grid; grid-template-columns: minmax(200px, 2fr) repeat(2, minmax(160px, 1fr)); gap: 12px; }
+textarea.input { height: auto; resize: vertical; }
+@media (max-width: 760px) { .relay-filters { grid-template-columns: 1fr; } }
+</style>

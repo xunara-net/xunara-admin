@@ -1,19 +1,23 @@
 // Typed wrappers over /api/platform/v1.
 
 import { platformApi } from "./client";
-import type { AuditEvent, Organization, Plan, PlatformUser } from "./types";
+import { toOrganization } from "./adapters";
+import type { AuditEvent, Organization, OrganizationPayload, Plan, PlatformRelay, PlatformUser, RelayConfigUpdate, RelayEnrollment, RelayVisibility } from "./types";
 
-export const listOrganizations = async (): Promise<Organization[]> =>
-  (await platformApi<{ organizations: Organization[] }>("/api/platform/v1/organizations")).organizations ?? [];
+export const listOrganizations = async (): Promise<Organization[]> => {
+  const answer = await platformApi<{ organizations: OrganizationPayload[] }>("/api/platform/v1/organizations");
+  if (!Array.isArray(answer?.organizations)) throw new Error("租户列表响应格式不正确");
+  return answer.organizations.map(toOrganization);
+};
 
-export const getOrganization = (id: string) =>
-  platformApi<Organization>(`/api/platform/v1/organizations/${encodeURIComponent(id)}`);
+export const getOrganization = async (id: string) =>
+  toOrganization(await platformApi<OrganizationPayload>(`/api/platform/v1/organizations/${encodeURIComponent(id)}`));
 
-export const updateOrganization = (id: string, body: { name?: string }) =>
-  platformApi<Organization>(`/api/platform/v1/organizations/${encodeURIComponent(id)}`, {
+export const updateOrganization = async (id: string, body: { name?: string }) =>
+  toOrganization(await platformApi<OrganizationPayload>(`/api/platform/v1/organizations/${encodeURIComponent(id)}`, {
     method: "PATCH",
     body,
-  });
+  }));
 
 export const deleteOrganization = (id: string) =>
   platformApi<void>(`/api/platform/v1/organizations/${encodeURIComponent(id)}`, { method: "DELETE" });
@@ -21,7 +25,7 @@ export const deleteOrganization = (id: string) =>
 export const setTenantPlan = (orgID: string, planID: string) =>
   platformApi<unknown>(`/api/platform/v1/organizations/${encodeURIComponent(orgID)}/plan`, {
     method: "PATCH",
-    body: { plan: planID },
+    body: { plan_id: planID },
   });
 
 export const allocateTenantNetwork = (orgID: string) =>
@@ -59,3 +63,30 @@ export const listAudit = async (params: { org?: string; limit?: number } = {}): 
   });
   return answer.events ?? [];
 };
+
+export const listRelays = async (): Promise<PlatformRelay[]> => {
+  const answer = await platformApi<{ relays: PlatformRelay[] }>("/api/platform/v1/relays");
+  if (!Array.isArray(answer?.relays)) throw new Error("中继列表响应格式不正确");
+  return answer.relays;
+};
+
+export const createRelayEnrollment = (organizationID: string, body: {
+  name: string;
+  visibility: RelayVisibility;
+  ttl_seconds: number;
+}) => platformApi<RelayEnrollment>(
+  `/api/platform/v1/organizations/${encodeURIComponent(organizationID)}/relays/enroll-tokens`,
+  { method: "POST", body },
+);
+
+export const updateRelay = (organizationID: string, relayID: string, body: RelayConfigUpdate) =>
+  platformApi<PlatformRelay>(
+    `/api/platform/v1/organizations/${encodeURIComponent(organizationID)}/relays/${encodeURIComponent(relayID)}`,
+    { method: "PATCH", body },
+  );
+
+export const deleteRelay = (organizationID: string, relayID: string) =>
+  platformApi<void>(
+    `/api/platform/v1/organizations/${encodeURIComponent(organizationID)}/relays/${encodeURIComponent(relayID)}`,
+    { method: "DELETE" },
+  );

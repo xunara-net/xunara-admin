@@ -16,6 +16,10 @@ export class ApiError extends Error {
 
 type Options = { method?: string; body?: unknown; query?: Record<string, string | undefined> };
 
+const platformErrorMessages: Record<string, string> = {
+  "the current plan does not allow another relay": "当前套餐的托管中继额度已用完，请调整所属租户的套餐或清理现有中继。",
+};
+
 export async function platformApi<T>(path: string, options: Options = {}): Promise<T> {
   const url = new URL(path, window.location.origin);
   for (const [key, value] of Object.entries(options.query ?? {})) {
@@ -32,10 +36,11 @@ export async function platformApi<T>(path: string, options: Options = {}): Promi
   }
 
   const resp = await fetch(url, init);
-  if (resp.status === 401 || resp.status === 403) {
+  if (resp.status === 401) {
     admin.signOut();
     throw new ApiError(resp.status, "平台令牌无效或已过期，请重新登录");
   }
+  // 403 可能是套餐配额或权限限制，不代表平台身份失效，不能顺手清掉令牌。
   if (resp.status === 204) return undefined as T;
 
   const text = await resp.text();
@@ -46,7 +51,8 @@ export async function platformApi<T>(path: string, options: Options = {}): Promi
     payload = undefined;
   }
   if (!resp.ok) {
-    throw new ApiError(resp.status, payload?.message ?? payload?.error ?? (text || `HTTP ${resp.status}`));
+    const message = payload?.message ?? payload?.error ?? (text.trim() || `HTTP ${resp.status}`);
+    throw new ApiError(resp.status, platformErrorMessages[message] ?? message);
   }
   return payload as T;
 }

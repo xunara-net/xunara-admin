@@ -32,6 +32,7 @@ function emptyPlan(): Plan {
     max_users: 1,
     max_routes: 4,
     max_auth_keys: 3,
+    max_relays: 1,
     allow_custom_cidr: false,
     allow_exit_node: false,
     allow_subnet_router: false,
@@ -111,6 +112,7 @@ async function remove(plan: Plan) {
       { key: 'price', title: '价格' },
       { key: 'max_devices', title: '设备' },
       { key: 'max_users', title: '成员' },
+      { key: 'max_relays', title: '中继' },
       { key: 'capabilities', title: '能力' },
       { key: 'actions', title: '操作', align: 'right' },
     ]" :rows="plans" :loading="loading" row-key="id" empty-title="还没有套餐">
@@ -121,6 +123,7 @@ async function remove(plan: Plan) {
       <template #cell-price="{ row }">{{ priceText(row.price_cents, row.currency) }}<span v-if="row.billing_cycle" style="color: var(--text-faint)"> / {{ row.billing_cycle === "month" ? "月" : "年" }}</span></template>
       <template #cell-max_devices="{ row }">{{ quotaText(row.max_devices) }}</template>
       <template #cell-max_users="{ row }">{{ quotaText(row.max_users) }}</template>
+      <template #cell-max_relays="{ row }">{{ quotaText(row.max_relays) }}</template>
       <template #cell-capabilities="{ row }">
         <span v-if="row.allow_custom_cidr" class="badge">自定义网段</span>
         <span v-if="row.allow_exit_node" class="badge" style="margin-left: 4px">出口节点</span>
@@ -174,6 +177,10 @@ async function remove(plan: Plan) {
       <div class="field">
         <label>预授权密钥上限</label>
         <input v-model.number="dialog.plan.max_auth_keys" class="input" type="number" />
+      </div>
+      <div class="field">
+        <label>托管中继上限（-1 不限）</label>
+        <input v-model.number="dialog.plan.max_relays" class="input" type="number" min="-1" step="1" />
       </div>
     </div>
     <div class="field">

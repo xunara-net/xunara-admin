@@ -1,7 +1,7 @@
 // Typed wrappers over /api/platform/v1.
 
 import { platformApi } from "./client";
-import { toOrganization } from "./adapters";
+import { toOrganization, toPlan } from "./adapters";
 import type { AuditEvent, Organization, OrganizationPayload, Plan, PlatformRelay, PlatformUser, RelayConfigUpdate, RelayEnrollment, RelayVisibility } from "./types";
 
 export const listOrganizations = async (): Promise<Organization[]> => {
@@ -34,11 +34,14 @@ export const allocateTenantNetwork = (orgID: string) =>
     { method: "POST", body: {} },
   );
 
-export const listPlans = async (): Promise<{ plans: Plan[]; default: string }> =>
-  platformApi<{ plans: Plan[]; default: string }>("/api/platform/v1/plans");
+export const listPlans = async (): Promise<{ plans: Plan[]; default: string }> => {
+  const answer = await platformApi<{ plans: Plan[]; default: string }>("/api/platform/v1/plans");
+  if (!Array.isArray(answer?.plans)) throw new Error("套餐列表响应格式不正确");
+  return { plans: answer.plans.map(toPlan), default: answer.default };
+};
 
 export const savePlan = (plan: Plan) =>
-  platformApi<Plan>("/api/platform/v1/plans", { method: "POST", body: plan });
+  platformApi<Plan>("/api/platform/v1/plans", { method: "POST", body: toPlan(plan) });
 
 export const deletePlan = (id: string) =>
   platformApi<void>(`/api/platform/v1/plans/${encodeURIComponent(id)}`, { method: "DELETE" });

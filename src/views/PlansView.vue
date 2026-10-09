@@ -179,8 +179,8 @@ async function remove(plan: Plan) {
         <input v-model.number="dialog.plan.max_auth_keys" class="input" type="number" />
       </div>
       <div class="field">
-        <label>托管中继上限（-1 不限）</label>
-        <input v-model.number="dialog.plan.max_relays" class="input" type="number" min="-1" step="1" />
+        <label for="plan-relay-limit">托管中继上限（-1 不限）</label>
+        <input id="plan-relay-limit" v-model.number="dialog.plan.max_relays" class="input" type="number" min="-1" step="1" />
       </div>
     </div>
     <div class="field">

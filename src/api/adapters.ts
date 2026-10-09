@@ -1,4 +1,4 @@
-import type { Organization, OrganizationPayload } from "./types";
+import type { Organization, OrganizationPayload, Plan } from "./types";
 
 export function toOrganization(payload: OrganizationPayload): Organization {
   const stats = payload?.stats;
@@ -27,4 +27,20 @@ export function toOrganization(payload: OrganizationPayload): Organization {
       relaysOnline: stats.relays_online,
     },
   };
+}
+
+const planFields = [
+  "id", "name", "price_cents", "currency", "billing_cycle", "max_devices", "max_users",
+  "max_routes", "max_auth_keys", "max_relays", "allow_custom_cidr", "allow_exit_node",
+  "allow_subnet_router", "allow_api", "allow_acl", "allow_grants", "allow_custom_dns",
+  "allow_audit_log", "allow_multi_member",
+] as const satisfies readonly (keyof Plan)[];
+
+export function toPlan(payload: Plan): Plan {
+  if (!payload || ![payload.max_devices, payload.max_users, payload.max_routes, payload.max_auth_keys, payload.max_relays]
+    .every((value) => Number.isSafeInteger(value) && value >= -1)) {
+    throw new Error("套餐响应缺少有效配额，请升级服务端后再编辑，避免覆盖原有额度");
+  }
+  // 读接口含展示字段，严格写接口只接受套餐数据；禁止把派生字段或新未知字段原样回写。
+  return Object.fromEntries(planFields.map((field) => [field, payload[field]])) as unknown as Plan;
 }

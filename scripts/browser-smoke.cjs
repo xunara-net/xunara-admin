@@ -168,6 +168,24 @@ async function main() {
     assert.equal((await answer.json()).plan, plan);
     await adminPage.locator('tbody').getByText(plan === 'pro' ? 'Pro' : 'Free', { exact: true }).waitFor();
   }
+
+  mark('plan-editor-retains-quota-and-removes-read-only-fields');
+  await adminPage.goto(origin + '/admin/plans');
+  for (const relayLimit of [6, 5]) {
+    await adminPage.locator('tbody tr').filter({ hasText: 'Pro' }).getByRole('button', { name: '编辑', exact: true }).click();
+    await adminPage.getByLabel('托管中继上限（-1 不限）', { exact: true }).fill(String(relayLimit));
+    const saved = adminPage.waitForResponse((response) => response.url().endsWith('/api/platform/v1/plans') && response.request().method() === 'POST');
+    await adminPage.getByRole('button', { name: '保存', exact: true }).click();
+    const answer = await saved;
+    assert.equal(answer.status(), 200);
+    assert.equal((await answer.json()).max_relays, relayLimit);
+    const payload = answer.request().postDataJSON();
+    assert.equal(Object.hasOwn(payload, 'default'), false);
+    assert.equal(Object.hasOwn(payload, 'device_allowance'), false);
+    await adminPage.locator('.modal-mask').waitFor({ state: 'hidden' });
+    const catalog = await api('/api/platform/v1/plans', platformToken, undefined, 'GET').then((response) => response.json());
+    assert.equal(catalog.plans.find((entry) => entry.id === 'pro').max_relays, relayLimit);
+  }
   await adminPage.goto(origin + '/admin/relays');
   await adminPage.getByText('尚未注册托管中继', { exact: true }).waitFor();
 

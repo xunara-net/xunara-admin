@@ -74,6 +74,13 @@ SMOKE_XUNARAD="$test_binary" PLAYWRIGHT_MODULE=/absolute/path/to/playwright-core
 隔离本地 OIDC 发行方真实签发 RSA ID Token，验证同源 SPA 入口、固定回调、PKCE、
 签名/nonce、浏览器绑定/state/重放、产品/后端回跳和旧提供方书签。发行方确认页
 让测试显式停在回调前，不依赖 Playwright 对 302 链中间请求的拦截。
+
+网络控制台回归复用 `../xunara-web/scripts/network-browser-smoke.cjs`，在 Node 22 的
+隔离 SQLite 状态创建设备夹具，验证图形规则、真实编译器模拟、跨页权限矩阵、
+自检失败、CAS 冲突保留草稿、历史恢复、DNS 写入/保护/重载、私有中继令牌清理与
+成员只读边界；手机抽屉核对焦点、背景滚动及 320 / 390 / 768px 横向布局。
+设备夹具不代表浏览器完成官方客户端注册或真实网络发包，协议验收由服务端测试负责。
+可选设置 `SMOKE_ARTIFACT_DIR` 保存无凭据的隔离 ACL 页面截图，不截取令牌弹窗。
 新增初始化单次认领 / 残留令牌重放，以及登录配置 503、畸形响应、重试恢复验收。
 二十五阶段结束时清理临时状态；不会连公网提供方或修改生产用户，不代表真实设备
 审批、双客户端 DERP 转发、生产 HTTPS 或全平台兼容。

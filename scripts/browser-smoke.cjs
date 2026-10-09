@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
+const { runNetworkSmoke } = require('../../xunara-web/scripts/network-browser-smoke.cjs');
 
 const adminDist = path.resolve(__dirname, '../dist');
 const webDist = path.resolve(__dirname, '../../xunara-web/dist');
@@ -146,7 +147,7 @@ async function main() {
   const log = fs.openSync(path.join(state, 'daemon.log'), 'a', 0o600);
   // 只创建隔离的临时租户；凭据在进程内生成，经请求正文或环境传递，不出现在参数或输出。
   daemon = spawn(binary, ['-listen', `127.0.0.1:${controlPort}`, '-grpc-listen', '127.0.0.1:0',
-    '-server-url', origin, '-state-dir', state, '-plans', 'builtin', '-network-pool', '100.100.0.0/16', '-log-level', 'error',
+    '-server-url', origin, '-state-dir', state, '-plans', 'builtin', '-network-pool', '100.100.0.0/16', '-domain', 'smoke.xunara.test', '-log-level', 'error',
     '-oidc-issuer', issuerOrigin, '-oidc-client-id', 'browser-smoke', '-oidc-id', 'smoke-oidc', '-allow-local-login'], {
     env: { ...process.env, XUNARA_PLATFORM_ADMIN_TOKEN: platformToken }, stdio: ['ignore', log, log],
   });
@@ -375,10 +376,10 @@ async function main() {
   mark('tenant-relay-view-uses-enrolled-records');
   let peerRelayRequests = 0;
   userPage.on('request', (request) => { if (new URL(request.url()).pathname === '/api/v2/relays') peerRelayRequests++; });
-  await userPage.goto(origin + '/routes');
+  await userPage.goto(origin + '/relays');
   await userPage.locator('tbody tr').filter({ hasText: '上海验收中继' }).waitFor();
   assert.equal(peerRelayRequests, 0);
-  assert.equal(await userPage.locator('.stat .value').nth(2).innerText(), '1');
+  await userPage.getByText('已接入 1 / 1', { exact: true }).waitFor();
 
   mark('network-read-failures-are-not-zero-resources');
   const networkPaths = ['/api/v1/routes', '/api/v2/relays/enrolled', '/api/v2/derp', '/api/v2/exit-nodes'];
@@ -388,11 +389,16 @@ async function main() {
   }
   await userPage.getByRole('button', { name: '刷新', exact: true }).click();
   await userPage.getByRole('alert').filter({ hasText: '托管中继读取失败' }).waitFor();
-  assert.equal(await userPage.getByRole('alert').count(), 4);
-  assert.deepEqual(await userPage.locator('.stat .value').allTextContents(), ['—', '—', '—']);
-  assert.equal(await userPage.getByText('暂无托管中继', { exact: true }).count(), 0);
+  assert.equal(await userPage.getByText('还没有私有中继', { exact: true }).count(), 0);
+  await userPage.getByRole('button', { name: '下发地图', exact: true }).click();
+  await userPage.getByText('网络读取失败（验收注入）', { exact: true }).waitFor();
+  await userPage.goto(origin + '/routes');
+  await userPage.getByRole('alert').filter({ hasText: '子网路由读取失败' }).waitFor();
+  await userPage.getByRole('alert').filter({ hasText: '出口节点读取失败' }).waitFor();
+  await userPage.getByText('子网路由 —', { exact: true }).waitFor();
+  await userPage.getByText('出口节点 —', { exact: true }).waitFor();
   for (const endpoint of networkPaths) await userPage.unroute('**' + endpoint);
-  await userPage.getByRole('button', { name: '刷新', exact: true }).click();
+  await userPage.goto(origin + '/relays');
   await userPage.locator('tbody tr').filter({ hasText: '上海验收中继' }).waitFor();
   assert.equal(await userPage.getByRole('alert').count(), 0);
   await userPage.setViewportSize({ width: 390, height: 844 });
@@ -608,13 +614,14 @@ async function main() {
   await legacyPage.getByRole('link', { name: '确认登录', exact: true }).click();
   await legacyPage.waitForURL(origin + '/security?legacy=1');
   assert.equal((await legacyContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json())).authenticated, true);
+  await runNetworkSmoke({ page: userPage, memberPage: invitedPage, origin, state, mark, assertSecretNotStored });
   assert.equal(pageErrors.length, 0);
   console.log(JSON.stringify({ passed: true, stages: completed, javascript_errors: pageErrors.length, fixture: 'isolated ephemeral tenant' }));
 }
 
 // 失败输出只有阶段与错误类型，不能把断言中的请求正文或凭据顺带打印。
 main().catch((error) => {
-  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename));
+  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('network-browser-smoke.cjs'));
   console.error(JSON.stringify({ failed_stage: stage, error_type: error.name, locations }));
   process.exitCode = 1;
 }).finally(async () => {

@@ -158,15 +158,41 @@ async function main() {
     await sleep(100);
   }
   assert.equal(ready, true);
+  mark('owner-bootstrap-claims-once-and-disarms-stale-proof');
+  const freshMethods = await fetch(control + '/api/v1/auth/providers').then((response) => response.json());
+  assert.equal(freshMethods.setup_required, true);
   const markup = await fetch(control + '/setup').then((response) => response.text());
   const formToken = /name="_csrf" value="([^"]+)"/.exec(markup)[1];
+  const setupProof = fs.readFileSync(path.join(state, 'setup-token'), 'utf8').trim();
   const initialized = await fetch(control + '/setup', {
     method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(10000),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ token: fs.readFileSync(path.join(state, 'setup-token'), 'utf8').trim(),
+    body: new URLSearchParams({ token: setupProof,
       _csrf: formToken, login: 'consolesmoke', display_name: '浏览器验收', email: 'same-email@example.invalid', password, confirm: password }),
   });
   assert.equal(initialized.status, 302);
+  assert.equal(initialized.headers.get('location'), '/console/');
+  const ownerCookie = initialized.headers.get('set-cookie').split(';', 1)[0];
+  const ownerBefore = await fetch(control + '/api/v1/auth/session', { headers: { Cookie: ownerCookie } }).then((response) => response.json());
+  assert.equal(ownerBefore.authenticated, true);
+  assert.equal(ownerBefore.user.id, 1);
+  assert.equal(ownerBefore.user.role, 'owner');
+  assert.equal(fs.existsSync(path.join(state, 'setup-token')), false);
+  // 残留文件不是认领权限；重放只去登录，不能覆盖 owner 或签发第二个初始化会话。
+  fs.writeFileSync(path.join(state, 'setup-token'), setupProof + '\n', { mode: 0o600 });
+  const repeatedSetup = await fetch(control + '/setup', {
+    method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(10000),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ token: setupProof, _csrf: formToken, login: 'replacement-owner', password, confirm: password }),
+  });
+  assert.equal(repeatedSetup.status, 302);
+  assert.equal(repeatedSetup.headers.get('location'), '/login');
+  assert.equal(repeatedSetup.headers.has('set-cookie'), false);
+  const ownerAfter = await fetch(control + '/api/v1/auth/session', { headers: { Cookie: ownerCookie } }).then((response) => response.json());
+  assert.deepEqual(ownerAfter.user, ownerBefore.user);
+  assert.equal(ownerAfter.session.id, ownerBefore.session.id);
+  assert.equal((await fetch(control + '/api/v1/auth/providers').then((response) => response.json())).setup_required, false);
+  fs.unlinkSync(path.join(state, 'setup-token'));
   const allocation = await api('/api/platform/v1/organizations/default/plan/allocate', platformToken, {});
   assert.equal(allocation.status, 200);
 
@@ -175,6 +201,32 @@ async function main() {
   const userContext = await browser.newContext();
   const userPage = await userContext.newPage();
   userPage.on('pageerror', (error) => pageErrors.push(error.name));
+  mark('login-policy-outage-malformed-response-and-recovery');
+  const methodsPattern = '**/api/v1/auth/providers';
+  const loginTarget = origin + '/login?return_to=' + encodeURIComponent('/security?metadata=1');
+  let prematureLogins = 0;
+  userPage.on('request', (request) => { if (new URL(request.url()).pathname === '/api/v1/auth/login') prematureLogins++; });
+  await userPage.route(methodsPattern, (route) => route.fulfill({ status: 503, contentType: 'application/json',
+    body: JSON.stringify({ error: 'AUTH_UNAVAILABLE: injected metadata outage' }) }));
+  await userPage.goto(loginTarget);
+  await userPage.getByRole('button', { name: '重试登录配置', exact: true }).waitFor();
+  assert.equal(await userPage.getByLabel('登录名', { exact: true }).count(), 0);
+  assert.equal(await userPage.getByRole('link', { name: '使用邀请码注册', exact: true }).count(), 0);
+  assert.equal(await userPage.getByRole('link', { name: '使用 smoke-oidc 登录', exact: true }).count(), 0);
+  assert.equal(userPage.url(), loginTarget);
+  const anonymousCookies = await userContext.cookies();
+  await userPage.unroute(methodsPattern);
+  await userPage.route(methodsPattern, (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ providers: [] }) }));
+  await userPage.getByRole('button', { name: '重试登录配置', exact: true }).click();
+  await userPage.getByText('登录方式响应格式无效，请稍后重试或联系管理员。', { exact: true }).waitFor();
+  assert.equal(await userPage.getByLabel('登录名', { exact: true }).count(), 0);
+  assert.equal(prematureLogins, 0);
+  assert.equal(userPage.url(), loginTarget);
+  assert.deepEqual(await userContext.cookies(), anonymousCookies);
+  await userPage.unroute(methodsPattern);
+  await userPage.getByRole('button', { name: '重试登录配置', exact: true }).click();
+  await userPage.getByLabel('登录名', { exact: true }).waitFor();
+  assert.equal(await userPage.getByRole('link', { name: '使用 smoke-oidc 登录', exact: true }).count(), 1);
   await userPage.goto(origin + '/login');
   await userPage.getByLabel('登录名', { exact: true }).fill('consolesmoke');
   await userPage.getByLabel('密码', { exact: true }).fill(password);

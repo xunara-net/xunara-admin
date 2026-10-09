@@ -74,7 +74,8 @@ SMOKE_XUNARAD="$test_binary" PLAYWRIGHT_MODULE=/absolute/path/to/playwright-core
 隔离本地 OIDC 发行方真实签发 RSA ID Token，验证同源 SPA 入口、固定回调、PKCE、
 签名/nonce、浏览器绑定/state/重放、产品/后端回跳和旧提供方书签。发行方确认页
 让测试显式停在回调前，不依赖 Playwright 对 302 链中间请求的拦截。
-二十三阶段结束时清理临时状态；不会连公网提供方或修改生产用户，不代表真实设备
+新增初始化单次认领 / 残留令牌重放，以及登录配置 503、畸形响应、重试恢复验收。
+二十五阶段结束时清理临时状态；不会连公网提供方或修改生产用户，不代表真实设备
 审批、双客户端 DERP 转发、生产 HTTPS 或全平台兼容。
 
 ## 部署

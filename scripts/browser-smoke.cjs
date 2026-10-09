@@ -256,6 +256,32 @@ async function main() {
   assert.equal(await adminPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
   await adminPage.setViewportSize({ width: 1440, height: 1000 });
 
+  mark('tenant-relay-view-uses-enrolled-records');
+  let peerRelayRequests = 0;
+  userPage.on('request', (request) => { if (new URL(request.url()).pathname === '/api/v2/relays') peerRelayRequests++; });
+  await userPage.goto(origin + '/routes');
+  await userPage.locator('tbody tr').filter({ hasText: '上海验收中继' }).waitFor();
+  assert.equal(peerRelayRequests, 0);
+  assert.equal(await userPage.locator('.stat .value').nth(2).innerText(), '1');
+
+  mark('network-read-failures-are-not-zero-resources');
+  const networkPaths = ['/api/v1/routes', '/api/v2/relays/enrolled', '/api/v2/derp', '/api/v2/exit-nodes'];
+  for (const endpoint of networkPaths) {
+    await userPage.route('**' + endpoint, (route) => route.fulfill({ status: 503, contentType: 'application/json',
+      body: JSON.stringify({ error: '网络读取失败（验收注入）' }) }));
+  }
+  await userPage.getByRole('button', { name: '刷新', exact: true }).click();
+  await userPage.getByRole('alert').filter({ hasText: '托管中继读取失败' }).waitFor();
+  assert.equal(await userPage.getByRole('alert').count(), 4);
+  assert.deepEqual(await userPage.locator('.stat .value').allTextContents(), ['—', '—', '—']);
+  assert.equal(await userPage.getByText('暂无托管中继', { exact: true }).count(), 0);
+  for (const endpoint of networkPaths) await userPage.unroute('**' + endpoint);
+  await userPage.getByRole('button', { name: '刷新', exact: true }).click();
+  await userPage.locator('tbody tr').filter({ hasText: '上海验收中继' }).waitFor();
+  assert.equal(await userPage.getByRole('alert').count(), 0);
+  await userPage.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await userPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
+
   mark('relay-deletion-invalidates-long-term-identity');
   adminPage.once('dialog', (dialog) => dialog.dismiss());
   await adminPage.getByRole('button', { name: '删除', exact: true }).click();
@@ -273,6 +299,56 @@ async function main() {
   await adminPage.unroute('**/api/platform/v1/relays');
   await adminPage.getByRole('button', { name: '重试', exact: true }).click();
   await adminPage.getByText('尚未注册托管中继', { exact: true }).waitFor();
+  mark('member-owner-boundary-and-confirmation');
+  await userPage.goto(origin + '/members');
+  const ownerSelect = userPage.locator('tbody select');
+  await ownerSelect.waitFor();
+  assert.equal(await ownerSelect.isDisabled(), true);
+  const actualUsers = await userContext.request.get(origin + '/api/v1/users').then((response) => response.json());
+  const memberFixture = { id: 2, loginName: 'member-smoke', displayName: '权限验收成员', email: '', role: 'viewer' };
+  // 注入一条展示夹具和写入故障，只验收 UI 取消/失败回滚，不冒充真实服务端改角色。
+  await userPage.route('**/api/v1/users', (route) => route.fulfill({ status: 200, contentType: 'application/json',
+    body: JSON.stringify({ users: [...actualUsers.users, memberFixture] }) }));
+  let roleWrites = 0;
+  await userPage.route('**/api/v1/users/2', (route) => {
+    roleWrites++;
+    return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: '角色更新失败（验收注入）' }) });
+  });
+  await userPage.getByRole('button', { name: '刷新', exact: true }).click();
+  const memberSelect = userPage.locator('tbody tr').filter({ hasText: 'member-smoke' }).locator('select');
+  await memberSelect.waitFor();
+  userPage.once('dialog', (dialog) => dialog.dismiss());
+  await memberSelect.selectOption('admin');
+  assert.equal(roleWrites, 0);
+  assert.equal(await memberSelect.inputValue(), 'viewer');
+  userPage.once('dialog', (dialog) => dialog.accept());
+  await memberSelect.selectOption('admin');
+  await userPage.getByText('角色更新失败（验收注入）', { exact: true }).waitFor();
+  assert.equal(roleWrites, 1);
+  assert.equal(await memberSelect.inputValue(), 'viewer');
+  await userPage.unroute('**/api/v1/users/2');
+  await userPage.unroute('**/api/v1/users');
+  await userPage.route(snapshotPattern, async (route) => {
+    const response = await route.fetch();
+    const snapshot = await response.json();
+    snapshot.user.role = 'admin';
+    await route.fulfill({ response, json: snapshot });
+  });
+  await userPage.reload();
+  await userPage.getByText('只有网络所有者可以修改成员角色。', { exact: false }).waitFor();
+  assert.equal(await userPage.locator('tbody select').count(), 0);
+  await userPage.unroute(snapshotPattern);
+
+  mark('member-list-failure-is-not-empty');
+  await userPage.route('**/api/v1/users', (route) => route.fulfill({ status: 503, contentType: 'application/json',
+    body: JSON.stringify({ error: '成员列表读取失败（验收注入）' }) }));
+  await userPage.getByRole('button', { name: '刷新', exact: true }).click();
+  await userPage.getByRole('alert').filter({ hasText: '成员列表读取失败' }).waitFor();
+  assert.equal(await userPage.getByText('没有成员', { exact: true }).count(), 0);
+  await userPage.unroute('**/api/v1/users');
+  await userPage.getByRole('button', { name: '刷新', exact: true }).click();
+  await userPage.locator('tbody tr').filter({ hasText: 'consolesmoke' }).waitFor();
+  assert.equal(await userPage.getByRole('alert').count(), 0);
   assert.equal(pageErrors.length, 0);
   console.log(JSON.stringify({ passed: true, stages: completed, javascript_errors: pageErrors.length, fixture: 'isolated ephemeral tenant' }));
 }

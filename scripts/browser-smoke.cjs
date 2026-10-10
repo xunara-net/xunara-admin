@@ -627,6 +627,27 @@ async function main() {
     const response = await api('/api/platform/v1/organizations/default/plan', platformToken, { plan_id: planID }, 'PATCH');
     assert.equal(response.status, 200);
   } });
+
+  mark('platform-custom-private-cidr-uses-same-safety-path-on-mobile');
+  await adminPage.goto(origin + '/admin/tenants');
+  await adminPage.getByRole('button', { name: '网段', exact: true }).click();
+  const networkDialog = adminPage.getByRole('dialog', { name: '租户网段', exact: true });
+  await networkDialog.getByText('非标准网段允许保存', { exact: false }).waitFor();
+  await networkDialog.getByLabel('租户自定义 IPv4 网段', { exact: true }).fill('192.168.55.12/24');
+  for (const width of [320, 390, 768]) {
+    await adminPage.setViewportSize({ width, height: 844 });
+    assert.equal(await adminPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+  }
+  const networkSaved = adminPage.waitForResponse((response) => response.url().endsWith('/organizations/default/plan') && response.request().method() === 'PATCH');
+  await networkDialog.getByRole('button', { name: '保存自定义网段', exact: true }).click();
+  const networkAnswer = await networkSaved;
+  assert.equal(networkAnswer.status(), 200);
+  assert.equal((await networkAnswer.json()).network_prefix, '192.168.55.0/24');
+  await networkDialog.waitFor({ state: 'detached' });
+  await adminPage.reload();
+  await adminPage.locator('tbody').getByText('192.168.55.0/24', { exact: true }).waitFor();
+  const currentAllocation = await userContext.request.get(origin + '/api/v2/network/addresses').then((response) => response.json());
+  assert.equal(currentAllocation.ipv4_cidr, '192.168.55.0/24'); assert.equal(currentAllocation.pending, false);
   assert.equal(pageErrors.length, 0);
   console.log(JSON.stringify({ passed: true, stages: completed, javascript_errors: pageErrors.length, fixture: 'isolated ephemeral tenant' }));
 }

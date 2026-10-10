@@ -160,9 +160,10 @@ async function removeOrg(org: Organization) {
       <div class="mono">{{ networkDialog.org?.stats.networkPrefix || "未分配" }}</div>
     </div>
     <div class="alert info">
-      自动分配只为尚未分配的租户选择地址池网段，不覆盖已有网段。自定义范围须在 100.64.0.0/10 内且套餐允许；保留系统地址及历史预留，已有设备 IP 不自动改写。
+      自动分配只为尚未分配的租户选择地址池网段，不覆盖已有网段。自定义合法 IPv4 不限于 CGNAT 或 /16～/28；保留系统地址、租户冲突、历史预留及套餐权限检查，已有设备 IP 不自动改写。
     </div>
-    <label class="field"><span>自定义 IPv4 CIDR</span><input v-model="networkDialog.prefix" class="input mono" aria-label="租户自定义 IPv4 网段" placeholder="100.101.50.0/24" :disabled="busy" /></label>
+    <div class="alert warning">非标准网段允许保存，但不能保证官方客户端全部功能兼容；请先实测并避免 LAN / 公网路由冲突。/31 和 /32 只有 2 个和 1 个地址，耗尽后不能注册新设备。</div>
+    <label class="field"><span>自定义 IPv4 CIDR</span><input v-model="networkDialog.prefix" class="input mono" aria-label="租户自定义 IPv4 网段" placeholder="192.168.50.0/24" :disabled="busy" /></label>
     <template #footer>
       <button class="btn" :disabled="busy" @click="networkDialog.open = false">取消</button>
       <button class="btn" :disabled="busy" @click="saveNetwork(false)">自动分配（保留已有网段）</button>

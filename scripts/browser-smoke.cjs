@@ -26,6 +26,7 @@ const pageErrors = [];
 const completed = [];
 let daemon, browser, proxy, origin, control, issuer;
 let issuerOrigin, issuerMode = 'valid', lastAccessToken = '', tokenExchanges = 0;
+let issuerSubject = 'browser-smoke-subject';
 const authorizationCodes = new Map();
 const signingKey = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
 const unrelatedKey = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -85,7 +86,7 @@ async function serveIssuer(request, response) {
     if (query.get('client_id') !== 'browser-smoke' || query.get('redirect_uri') !== origin + '/oidc/callback/smoke-oidc' || query.get('code_challenge_method') !== 'S256' || !query.get('state') || !query.get('nonce') || !query.get('code_challenge')) { json(400, { error: 'invalid_request' }); return; }
     const code = crypto.randomBytes(32).toString('base64url');
     authorizationCodes.set(code, { nonce: query.get('nonce'), challenge: query.get('code_challenge'),
-      redirect: query.get('redirect_uri'), mode: issuerMode, expires: Date.now() + 60000 });
+      redirect: query.get('redirect_uri'), mode: issuerMode, subject: issuerSubject, expires: Date.now() + 60000 });
     const callback = new URL(query.get('redirect_uri'));
     callback.searchParams.set('code', code);
     callback.searchParams.set('state', query.get('state'));
@@ -106,7 +107,7 @@ async function serveIssuer(request, response) {
       authorization.redirect !== values.get('redirect_uri') || authorization.challenge !== challenge) { json(400, { error: 'invalid_grant' }); return; }
     authorizationCodes.delete(code);
     const now = Math.floor(Date.now() / 1000);
-    const claims = { iss: issuerOrigin, aud: 'browser-smoke', sub: 'browser-smoke-subject', iat: now, exp: now + 120,
+    const claims = { iss: issuerOrigin, aud: 'browser-smoke', sub: authorization.subject, iat: now, exp: now + 120,
       nonce: authorization.mode === 'nonce' ? 'wrong-nonce' : authorization.nonce, email: 'same-email@example.invalid', name: 'OIDC 验收成员' };
     const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: publicJWK.kid, typ: 'JWT' })).toString('base64url');
     const payload = Buffer.from(JSON.stringify(claims)).toString('base64url');
@@ -152,7 +153,7 @@ async function main() {
   fs.writeFileSync(defaultRelayMap, JSON.stringify({ Regions: { '990': { RegionID: 990, RegionCode: 'default', RegionName: '默认验收中继', Nodes: [{ Name: 'default-smoke', RegionID: 990, HostName: 'default.example.test' }] } } }), { mode: 0o600 });
   // 只创建隔离的临时租户；凭据在进程内生成，经请求正文或环境传递，不出现在参数或输出。
   daemon = spawn(binary, ['-listen', `127.0.0.1:${controlPort}`, '-grpc-listen', '127.0.0.1:0',
-    '-server-url', origin, '-state-dir', state, '-plans', 'builtin', '-network-pool', '100.100.0.0/16', '-domain', 'smoke.xunara.test', '-derp-map', defaultRelayMap, '-log-level', 'error',
+    '-server-url', origin, '-state-dir', state, '-plans', 'builtin', '-network-pool', '100.100.0.0/16', '-derp-map', defaultRelayMap, '-log-level', 'error',
     '-oidc-issuer', issuerOrigin, '-oidc-client-id', 'browser-smoke', '-oidc-id', 'smoke-oidc', '-allow-local-login'], {
     env: { ...process.env, XUNARA_PLATFORM_ADMIN_TOKEN: platformToken }, stdio: ['ignore', log, log],
   });
@@ -238,6 +239,32 @@ async function main() {
   await userPage.getByLabel('密码', { exact: true }).fill(password);
   await userPage.getByRole('button', { name: '登录', exact: true }).click();
   await userPage.waitForURL('**/dashboard');
+
+  mark('free-magicdns-first-initialization-and-responsive-confirmation');
+  await userPage.goto(origin + '/dns');
+  await userPage.getByRole('button', { name: '启用 MagicDNS', exact: true }).click();
+  const magicDialog = userPage.getByRole('dialog', { name: '启用 MagicDNS', exact: true });
+  await magicDialog.getByText('不能直接更名', { exact: false }).waitFor();
+  for (const width of [320, 390, 768]) {
+    await userPage.setViewportSize({ width, height: 844 });
+    assert.equal(await userPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+  }
+  await magicDialog.getByRole('button', { name: '确认启用', exact: true }).click();
+  await magicDialog.waitFor({ state: 'detached' });
+  const magicConfiguration = await userContext.request.get(origin + '/api/v2/dns/configuration').then((response) => response.json());
+  assert.match(magicConfiguration.domain, /^net-[a-f0-9]{16}\.xunara\.internal$/);
+  assert.equal(magicConfiguration.settings.magic_dns, true);
+  assert.equal(magicConfiguration.can_edit, false);
+  await userPage.reload();
+  await userPage.getByRole('button', { name: 'MagicDNS', exact: true }).click();
+  await userPage.getByLabel('启用 MagicDNS 自动设备名称', { exact: true }).uncheck();
+  await userPage.getByRole('button', { name: '预览并保存设置', exact: true }).click();
+  await userPage.getByRole('dialog', { name: '确认 DNS 设置变更', exact: true }).getByRole('button', { name: '确认保存', exact: true }).click();
+  assert.equal((await userContext.request.get(origin + '/api/v2/dns/configuration').then((response) => response.json())).settings.magic_dns, false);
+  await userPage.getByLabel('启用 MagicDNS 自动设备名称', { exact: true }).check();
+  await userPage.getByRole('button', { name: '预览并保存设置', exact: true }).click();
+  await userPage.getByRole('dialog', { name: '确认 DNS 设置变更', exact: true }).getByRole('button', { name: '确认保存', exact: true }).click();
+  await userPage.getByRole('dialog', { name: '确认 DNS 设置变更', exact: true }).waitFor({ state: 'detached' });
 
   mark('authentication-outage-preserves-cookie-and-target');
   const beforeCookies = await userContext.cookies();
@@ -560,6 +587,26 @@ async function main() {
   await userPage.setViewportSize({ width: 390, height: 844 });
   assert.equal(await userPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
 
+  mark('oidc-invitation-registers-member-without-password-or-email-merging');
+  const inviteMetadata = await userContext.request.get(origin + '/api/v1/member-invitations').then((response) => response.json());
+  const externalInvite = await userContext.request.post(origin + '/api/v1/member-invitations', { headers: { 'X-CSRF-Token': inviteMetadata.csrf_token }, data: { role: 'member', note: 'OIDC 浏览器验收', ttl_hours: 24 } });
+  assert.equal(externalInvite.status(), 201);
+  const externalCode = (await externalInvite.json()).code;
+  const externalSignupContext = await browser.newContext();
+  const externalSignupPage = await externalSignupContext.newPage();
+  externalSignupPage.on('pageerror', (error) => pageErrors.push(error.name));
+  await externalSignupPage.goto(origin + '/register');
+  await externalSignupPage.getByLabel('邀请码', { exact: true }).fill(externalCode);
+  await externalSignupPage.getByRole('button', { name: '使用 smoke-oidc 加入网络', exact: true }).click();
+  assert.equal(externalSignupPage.url().includes(externalCode), false);
+  await externalSignupPage.getByRole('link', { name: '确认登录', exact: true }).click();
+  await externalSignupPage.waitForURL('**/dashboard');
+  const externalAccount = await externalSignupContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json());
+  assert.equal(externalAccount.user.role, 'member');
+  assert.notEqual(externalAccount.user.id, 1);
+  await assertSecretNotStored(externalSignupPage, externalCode);
+  await externalSignupContext.close();
+
   mark('real-oidc-through-spa-preserves-target-and-rejects-stolen-binding-state-replay');
   const oidcContext = await browser.newContext();
   const oidcPage = await oidcContext.newPage();
@@ -624,6 +671,54 @@ async function main() {
   await legacyPage.getByRole('link', { name: '确认登录', exact: true }).click();
   await legacyPage.waitForURL(origin + '/security?legacy=1');
   assert.equal((await legacyContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json())).authenticated, true);
+
+  mark('account-binding-requires-initiating-session-and-creates-no-member');
+  issuerSubject = 'owner-binding-subject';
+  await userPage.goto(origin + '/security');
+  const bindingsRegion = userPage.getByRole('region', { name: '第三方账号绑定', exact: true });
+  const beforeBindingMembers = await userContext.request.get(origin + '/api/v1/users').then((response) => response.json());
+  await bindingsRegion.getByRole('button', { name: '绑定 smoke-oidc', exact: true }).click();
+  const bindingConfirm = userPage.getByRole('link', { name: '确认登录', exact: true });
+  const bindingCallback = await bindingConfirm.getAttribute('href');
+  const bindingCookie = (await userContext.cookies()).find((cookie) => cookie.name === 'xunara_auth');
+  const bindingExchanges = tokenExchanges;
+  assert.equal((await unboundContext.request.get(bindingCallback, { maxRedirects: 0, headers: { Cookie: `${bindingCookie.name}=${bindingCookie.value}` } })).status(), 403);
+  assert.equal(tokenExchanges, bindingExchanges);
+  await bindingConfirm.click();
+  await userPage.waitForURL((target) => target.pathname === '/security');
+  await bindingsRegion.getByText('已绑定', { exact: true }).waitFor();
+  assert.equal((await userContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json())).user.id, 1);
+  const afterBindingMembers = await userContext.request.get(origin + '/api/v1/users').then((response) => response.json());
+  assert.equal(afterBindingMembers.users.length, beforeBindingMembers.users.length);
+  const boundMetadata = await userContext.request.get(origin + '/api/v1/account/identities').then((response) => response.json());
+  assert.equal(JSON.stringify(boundMetadata).includes(issuerSubject), false);
+  for (const width of [320, 390, 768]) {
+    await userPage.setViewportSize({ width, height: 844 });
+    assert.equal(await userPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+  }
+
+  mark('unlink-last-oidc-method-is-denied-without-signout');
+  await oidcPage.goto(origin + '/security');
+  oidcPage.once('dialog', (dialog) => dialog.accept());
+  await oidcPage.getByRole('region', { name: '第三方账号绑定', exact: true }).getByRole('button', { name: '解除绑定', exact: true }).click();
+  await oidcPage.getByRole('alert').filter({ hasText: '不能解绑最后一种可用登录方式' }).waitFor();
+  assert.equal((await oidcContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json())).authenticated, true);
+
+  mark('unlink-revokes-external-source-and-keeps-password-session');
+  const ownerSSOContext = await browser.newContext();
+  const ownerSSOPage = await ownerSSOContext.newPage();
+  await ownerSSOPage.goto(origin + '/login');
+  await ownerSSOPage.getByRole('link', { name: '使用 smoke-oidc 登录', exact: true }).click();
+  await ownerSSOPage.getByRole('link', { name: '确认登录', exact: true }).click();
+  await ownerSSOPage.waitForURL('**/dashboard');
+  assert.equal((await ownerSSOContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json())).user.id, 1);
+  userPage.once('dialog', (dialog) => dialog.accept());
+  await bindingsRegion.getByRole('button', { name: '解除绑定', exact: true }).click();
+  await bindingsRegion.getByRole('button', { name: '绑定 smoke-oidc', exact: true }).waitFor();
+  assert.equal((await ownerSSOContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json())).authenticated, false);
+  assert.equal((await userContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json())).authenticated, true);
+  await ownerSSOContext.close();
+  issuerSubject = 'browser-smoke-subject';
   await runNetworkSmoke({ page: userPage, memberPage: invitedPage, origin, state, mark, assertSecretNotStored });
   await runAddressRelaySmoke({ page: userPage, memberPage: invitedPage, origin, mark, assignPlan: async (planID) => {
     const response = await api('/api/platform/v1/organizations/default/plan', platformToken, { plan_id: planID }, 'PATCH');

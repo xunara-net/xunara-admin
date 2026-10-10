@@ -35,6 +35,11 @@ export const allocateTenantNetwork = (orgID: string) =>
     { method: "POST", body: {} },
   );
 
+export const setTenantNetwork = (orgID: string, networkPrefix: string) =>
+  platformApi<{ network_prefix: string }>(`/api/platform/v1/organizations/${encodeURIComponent(orgID)}/plan`, {
+    method: "PATCH", body: { network_prefix: networkPrefix },
+  });
+
 export const listPlans = async (): Promise<{ plans: Plan[]; default: string }> => {
   const answer = await platformApi<{ plans: Plan[]; default: string }>("/api/platform/v1/plans");
   if (!Array.isArray(answer?.plans)) throw new Error("套餐列表响应格式不正确");

@@ -9,6 +9,7 @@ const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const { runNetworkSmoke } = require('../../xunara-web/scripts/network-browser-smoke.cjs');
 const { runRelayHistorySmoke } = require('../../xunara-web/scripts/relay-history-browser-smoke.cjs');
+const { runAddressRelaySmoke } = require('../../xunara-web/scripts/address-relay-browser-smoke.cjs');
 
 const adminDist = path.resolve(__dirname, '../dist');
 const webDist = path.resolve(__dirname, '../../xunara-web/dist');
@@ -146,9 +147,11 @@ async function main() {
   const controlPort = await unusedPort();
   control = `http://127.0.0.1:${controlPort}`;
   const log = fs.openSync(path.join(state, 'daemon.log'), 'a', 0o600);
+  const defaultRelayMap = path.join(state, 'derp-map.json');
+  fs.writeFileSync(defaultRelayMap, JSON.stringify({ Regions: { '990': { RegionID: 990, RegionCode: 'default', RegionName: '默认验收中继', Nodes: [{ Name: 'default-smoke', RegionID: 990, HostName: 'default.example.test' }] } } }), { mode: 0o600 });
   // 只创建隔离的临时租户；凭据在进程内生成，经请求正文或环境传递，不出现在参数或输出。
   daemon = spawn(binary, ['-listen', `127.0.0.1:${controlPort}`, '-grpc-listen', '127.0.0.1:0',
-    '-server-url', origin, '-state-dir', state, '-plans', 'builtin', '-network-pool', '100.100.0.0/16', '-domain', 'smoke.xunara.test', '-log-level', 'error',
+    '-server-url', origin, '-state-dir', state, '-plans', 'builtin', '-network-pool', '100.100.0.0/16', '-domain', 'smoke.xunara.test', '-derp-map', defaultRelayMap, '-log-level', 'error',
     '-oidc-issuer', issuerOrigin, '-oidc-client-id', 'browser-smoke', '-oidc-id', 'smoke-oidc', '-allow-local-login'], {
     env: { ...process.env, XUNARA_PLATFORM_ADMIN_TOKEN: platformToken }, stdio: ['ignore', log, log],
   });
@@ -380,6 +383,7 @@ async function main() {
   let peerRelayRequests = 0;
   userPage.on('request', (request) => { if (new URL(request.url()).pathname === '/api/v2/relays') peerRelayRequests++; });
   await userPage.goto(origin + '/relays');
+  await userPage.getByRole('navigation', { name: '中继功能' }).getByRole('button', { name: '私有中继', exact: true }).click();
   await userPage.locator('tbody tr').filter({ hasText: '上海验收中继' }).waitFor();
   assert.equal(peerRelayRequests, 0);
   await userPage.getByText('已接入 1 / 1', { exact: true }).waitFor();
@@ -393,7 +397,7 @@ async function main() {
   await userPage.getByRole('button', { name: '刷新', exact: true }).click();
   await userPage.getByRole('alert').filter({ hasText: '托管中继读取失败' }).waitFor();
   assert.equal(await userPage.getByText('还没有私有中继', { exact: true }).count(), 0);
-  await userPage.getByRole('button', { name: '下发地图', exact: true }).click();
+  await userPage.getByRole('navigation', { name: '中继功能' }).getByRole('button', { name: '可用中继', exact: true }).click();
   await userPage.getByText('网络读取失败（验收注入）', { exact: true }).waitFor();
   await userPage.goto(origin + '/routes');
   await userPage.getByRole('alert').filter({ hasText: '子网路由读取失败' }).waitFor();
@@ -402,6 +406,7 @@ async function main() {
   await userPage.getByText('出口节点 —', { exact: true }).waitFor();
   for (const endpoint of networkPaths) await userPage.unroute('**' + endpoint);
   await userPage.goto(origin + '/relays');
+  await userPage.getByRole('navigation', { name: '中继功能' }).getByRole('button', { name: '私有中继', exact: true }).click();
   await userPage.locator('tbody tr').filter({ hasText: '上海验收中继' }).waitFor();
   assert.equal(await userPage.getByRole('alert').count(), 0);
   await userPage.setViewportSize({ width: 390, height: 844 });
@@ -618,6 +623,10 @@ async function main() {
   await legacyPage.waitForURL(origin + '/security?legacy=1');
   assert.equal((await legacyContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json())).authenticated, true);
   await runNetworkSmoke({ page: userPage, memberPage: invitedPage, origin, state, mark, assertSecretNotStored });
+  await runAddressRelaySmoke({ page: userPage, memberPage: invitedPage, origin, mark, upgrade: async () => {
+    const response = await api('/api/platform/v1/organizations/default/plan', platformToken, { plan_id: 'pro' }, 'PATCH');
+    assert.equal(response.status, 200);
+  } });
   assert.equal(pageErrors.length, 0);
   console.log(JSON.stringify({ passed: true, stages: completed, javascript_errors: pageErrors.length, fixture: 'isolated ephemeral tenant' }));
 }

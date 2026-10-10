@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { platformApi } from "./client";
-import { createRelayEnrollment, deleteRelay, getRelay, listRelayHistory, listRelays, setTenantPlan, updateRelay } from "./endpoints";
+import { createRelayEnrollment, deleteRelay, getRelay, listRelayHistory, listRelays, setTenantNetwork, setTenantPlan, updateRelay } from "./endpoints";
 
 vi.mock("./client", () => ({ platformApi: vi.fn() }));
 
@@ -74,5 +74,10 @@ describe("relay platform API contract", () => {
   it("changes the tenant plan with the server's plan_id field, not a silently ignored label", async () => {
     await setTenantPlan("acme", "pro");
     expect(platformApi).toHaveBeenCalledWith("/api/platform/v1/organizations/acme/plan", { method: "PATCH", body: { plan_id: "pro" } });
+  });
+
+  it("uses the tenant network_prefix field and escapes the organization path", async () => {
+    await setTenantNetwork("tenant/id", "100.101.50.0/24");
+    expect(platformApi).toHaveBeenCalledWith("/api/platform/v1/organizations/tenant%2Fid/plan", { method: "PATCH", body: { network_prefix: "100.101.50.0/24" } });
   });
 });

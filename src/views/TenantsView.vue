@@ -69,14 +69,12 @@ function openNetworkDialog(org: Organization) {
   networkDialog.value = { open: true, org, prefix: org.stats.networkPrefix ?? "" };
 }
 
-async function saveNetwork() {
+async function saveNetwork(custom = false) {
   const org = networkDialog.value.org;
   if (!org) return;
   busy.value = true;
   try {
-    // Allocating a new block from the pool is the safe default; a custom
-    // range is applied with the same call the console uses.
-    const answer = await ep.allocateTenantNetwork(org.id);
+    const answer = custom ? await ep.setTenantNetwork(org.id, networkDialog.value.prefix.trim()) : await ep.allocateTenantNetwork(org.id);
     admin.toast("success", `已为 ${org.id} 分配网段 ${answer.network_prefix ?? ""}`);
     networkDialog.value.open = false;
     await load();
@@ -156,17 +154,19 @@ async function removeOrg(org: Organization) {
     </template>
   </ModalDialog>
 
-  <ModalDialog title="租户网段" :open="networkDialog.open" @close="networkDialog.open = false">
+  <ModalDialog title="租户网段" :open="networkDialog.open" :busy="busy" @close="networkDialog.open = false">
     <div class="field">
       <label>当前网段</label>
       <div class="mono">{{ networkDialog.org?.stats.networkPrefix || "未分配" }}</div>
     </div>
     <div class="alert info">
-      从地址池重新分配会替换该租户的网段；设备在新网段生效前会保留旧地址。自定义网段需要租户套餐包含「自定义网段」能力。
+      自动分配只为尚未分配的租户选择地址池网段，不覆盖已有网段。自定义范围须在 100.64.0.0/10 内且套餐允许；保留系统地址及历史预留，已有设备 IP 不自动改写。
     </div>
+    <label class="field"><span>自定义 IPv4 CIDR</span><input v-model="networkDialog.prefix" class="input mono" aria-label="租户自定义 IPv4 网段" placeholder="100.101.50.0/24" :disabled="busy" /></label>
     <template #footer>
-      <button class="btn" @click="networkDialog.open = false">取消</button>
-      <button class="btn primary" :disabled="busy" @click="saveNetwork">重新分配</button>
+      <button class="btn" :disabled="busy" @click="networkDialog.open = false">取消</button>
+      <button class="btn" :disabled="busy" @click="saveNetwork(false)">自动分配（保留已有网段）</button>
+      <button class="btn primary" :disabled="busy || !networkDialog.prefix.trim()" @click="saveNetwork(true)">保存自定义网段</button>
     </template>
   </ModalDialog>
 </template>

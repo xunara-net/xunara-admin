@@ -10,6 +10,7 @@ const assert = require('node:assert/strict');
 const { runNetworkSmoke } = require('../../xunara-web/scripts/network-browser-smoke.cjs');
 const { runRelayHistorySmoke } = require('../../xunara-web/scripts/relay-history-browser-smoke.cjs');
 const { runAddressRelaySmoke } = require('../../xunara-web/scripts/address-relay-browser-smoke.cjs');
+const { runMemberSmoke } = require('../../xunara-web/scripts/member-browser-smoke.cjs');
 
 const adminDist = path.resolve(__dirname, '../dist');
 const webDist = path.resolve(__dirname, '../../xunara-web/dist');
@@ -435,13 +436,14 @@ async function main() {
   await ownerSelect.waitFor();
   assert.equal(await ownerSelect.isDisabled(), true);
   const actualUsers = await userContext.request.get(origin + '/api/v1/users').then((response) => response.json());
-  const memberFixture = { id: 2, loginName: 'member-smoke', displayName: '权限验收成员', email: '', role: 'member' };
+  const memberFixture = { id: 2, loginName: 'member-smoke', displayName: '权限验收成员', email: '', role: 'member', updatedAt: '2026-10-11T00:00:00.123456789Z' };
   // 注入一条展示夹具和写入故障，只验收 UI 取消/失败回滚，不冒充真实服务端改角色。
   await userPage.route('**/api/v1/users', (route) => route.fulfill({ status: 200, contentType: 'application/json',
     body: JSON.stringify({ users: [...actualUsers.users, memberFixture] }) }));
   let roleWrites = 0;
   await userPage.route('**/api/v1/users/2', (route) => {
     roleWrites++;
+    assert.deepEqual(route.request().postDataJSON(), { role: 'admin', expectedUpdatedAt: memberFixture.updatedAt });
     return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: '角色更新失败（验收注入）' }) });
   });
   await userPage.getByRole('button', { name: '刷新', exact: true }).click();
@@ -648,13 +650,14 @@ async function main() {
   await adminPage.locator('tbody').getByText('192.168.55.0/24', { exact: true }).waitFor();
   const currentAllocation = await userContext.request.get(origin + '/api/v2/network/addresses').then((response) => response.json());
   assert.equal(currentAllocation.ipv4_cidr, '192.168.55.0/24'); assert.equal(currentAllocation.pending, false);
+  await runMemberSmoke({ page: userPage, ownerContext: userContext, memberContext: invitedContext, origin, mark });
   assert.equal(pageErrors.length, 0);
   console.log(JSON.stringify({ passed: true, stages: completed, javascript_errors: pageErrors.length, fixture: 'isolated ephemeral tenant' }));
 }
 
 // 失败输出只有阶段与错误类型，不能把断言中的请求正文或凭据顺带打印。
 main().catch((error) => {
-  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('network-browser-smoke.cjs') || line.includes('relay-history-browser-smoke.cjs') || line.includes('address-relay-browser-smoke.cjs'));
+  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('network-browser-smoke.cjs') || line.includes('relay-history-browser-smoke.cjs') || line.includes('address-relay-browser-smoke.cjs') || line.includes('member-browser-smoke.cjs'));
   console.error(JSON.stringify({ failed_stage: stage, error_type: error.name, locations }));
   process.exitCode = 1;
 }).finally(async () => {

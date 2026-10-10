@@ -8,6 +8,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const { runNetworkSmoke } = require('../../xunara-web/scripts/network-browser-smoke.cjs');
+const { runRelayHistorySmoke } = require('../../xunara-web/scripts/relay-history-browser-smoke.cjs');
 
 const adminDist = path.resolve(__dirname, '../dist');
 const webDist = path.resolve(__dirname, '../../xunara-web/dist');
@@ -354,6 +355,8 @@ async function main() {
   assert.equal(configuration.region_name, '上海维护区');
   assert.equal(configuration.config_version, '2');
 
+  await runRelayHistorySmoke({ userPage, adminPage, origin, api, platformToken, relayIdentity, mark });
+
   mark('quota-denial-keeps-platform-login');
   await adminPage.getByRole('button', { name: '创建注册令牌', exact: true }).click();
   const quotaDenial = adminPage.waitForResponse((response) => response.url().endsWith('/relays/enroll-tokens') && response.status() === 403);
@@ -621,7 +624,7 @@ async function main() {
 
 // 失败输出只有阶段与错误类型，不能把断言中的请求正文或凭据顺带打印。
 main().catch((error) => {
-  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('network-browser-smoke.cjs'));
+  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('network-browser-smoke.cjs') || line.includes('relay-history-browser-smoke.cjs'));
   console.error(JSON.stringify({ failed_stage: stage, error_type: error.name, locations }));
   process.exitCode = 1;
 }).finally(async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PlatformRelay } from "../api/types";
-import { bandwidthText, bytesText, filterRelays, parseBandwidth, relayStatus } from "./relays";
+import { bandwidthText, bytesText, filterRelays, parseBandwidth, relayStatus, relayDesiredStateText } from "./relays";
 
 const relay: PlatformRelay = {
   id: "relay-1", name: "上海 01", organizationId: "acme", organizationName: "测试租户",
@@ -9,6 +9,11 @@ const relay: PlatformRelay = {
 };
 
 describe("relay presentation", () => {
+  it("does not describe a historical desired state as a live heartbeat", () => {
+    expect(relayDesiredStateText("online")).toBe("启用");
+    expect(relayDesiredStateText("revoked")).toContain("不可恢复身份");
+    expect(relayDesiredStateText("unknown")).toBe("未知期望状态");
+  });
   it("distinguishes heartbeat liveness, data-plane health and requested state", () => {
     expect(relayStatus(relay)).toBe("online");
     expect(relayStatus({ ...relay, healthy: false })).toBe("degraded");

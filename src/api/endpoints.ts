@@ -2,7 +2,7 @@
 
 import { platformApi } from "./client";
 import { toOrganization, toPlan } from "./adapters";
-import type { AuditEvent, Organization, OrganizationPayload, Plan, PlatformRelay, PlatformUser, RelayConfigUpdate, RelayEnrollment, RelayVisibility } from "./types";
+import type { AuditEvent, Organization, OrganizationPayload, Plan, PlatformRelay, PlatformUser, RelayConfigUpdate, RelayConfigurationHistory, RelayEnrollment, RelayVisibility } from "./types";
 
 export const listOrganizations = async (): Promise<Organization[]> => {
   const answer = await platformApi<{ organizations: OrganizationPayload[] }>("/api/platform/v1/organizations");
@@ -82,14 +82,29 @@ export const createRelayEnrollment = (organizationID: string, body: {
   { method: "POST", body },
 );
 
-export const updateRelay = (organizationID: string, relayID: string, body: RelayConfigUpdate) =>
-  platformApi<PlatformRelay>(
+export async function getRelay(organizationID: string, relayID: string) {
+  const relay = await platformApi<PlatformRelay>(`/api/platform/v1/organizations/${encodeURIComponent(organizationID)}/relays/${encodeURIComponent(relayID)}`);
+  if (!relay || relay.id !== relayID || relay.organizationId !== organizationID || !Number.isSafeInteger(relay.configVersion) || relay.configVersion < 1) throw new Error("中继配置响应格式不正确");
+  return relay;
+}
+
+export async function listRelayHistory(organizationID: string, relayID: string) {
+  const payload = await platformApi<{ items: RelayConfigurationHistory[] }>(`/api/platform/v1/organizations/${encodeURIComponent(organizationID)}/relays/${encodeURIComponent(relayID)}/history`);
+  if (!Array.isArray(payload?.items) || payload.items.length > 50 || !payload.items.every((item, index) => item && Number.isSafeInteger(item.config_version) && item.config_version > 0 && ["online", "maintenance", "disabled", "revoked"].includes(item.desired_state) && Number.isSafeInteger(item.bandwidth_limit) && item.bandwidth_limit >= -1 && typeof item.region_name === "string" && typeof item.actor === "string" && typeof item.created === "string" && Number.isFinite(Date.parse(item.created)) && (index === 0 || item.config_version < payload.items[index - 1]!.config_version))) throw new Error("中继历史响应格式不正确");
+  return payload.items;
+}
+
+export async function updateRelay(organizationID: string, relayID: string, body: RelayConfigUpdate) {
+  const relay = await platformApi<PlatformRelay>(
     `/api/platform/v1/organizations/${encodeURIComponent(organizationID)}/relays/${encodeURIComponent(relayID)}`,
     { method: "PATCH", body },
   );
+  if (!relay || relay.id !== relayID || relay.organizationId !== organizationID || relay.configVersion !== body.config_version + 1) throw new Error("中继配置响应格式不正确，请刷新确认实际结果");
+  return relay;
+}
 
-export const deleteRelay = (organizationID: string, relayID: string) =>
+export const deleteRelay = (organizationID: string, relayID: string, version: number) =>
   platformApi<void>(
     `/api/platform/v1/organizations/${encodeURIComponent(organizationID)}/relays/${encodeURIComponent(relayID)}`,
-    { method: "DELETE" },
+    { method: "DELETE", headers: { "If-Match": String(version) } },
   );

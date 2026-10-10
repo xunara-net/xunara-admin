@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { platformApi } from "./client";
-import { createRelayEnrollment, deleteRelay, listRelays, setTenantPlan, updateRelay } from "./endpoints";
+import { createRelayEnrollment, deleteRelay, getRelay, listRelayHistory, listRelays, setTenantPlan, updateRelay } from "./endpoints";
 
 vi.mock("./client", () => ({ platformApi: vi.fn() }));
 
@@ -28,11 +28,35 @@ describe("relay platform API contract", () => {
   });
 
   it("keeps zero bandwidth updates and escapes both tenant and relay IDs", async () => {
-    const body = { desired_state: "maintenance" as const, bandwidth_limit: 0, region_name: "" };
+    const body = { config_version: 2, desired_state: "maintenance" as const, bandwidth_limit: 0, region_name: "" };
+    vi.mocked(platformApi).mockResolvedValue({ id: "relay?other", organizationId: "tenant/id", configVersion: 3 });
     await updateRelay("tenant/id", "relay?other", body);
     expect(platformApi).toHaveBeenCalledWith("/api/platform/v1/organizations/tenant%2Fid/relays/relay%3Fother", { method: "PATCH", body });
-    await deleteRelay("acme", "relay/id");
-    expect(platformApi).toHaveBeenLastCalledWith("/api/platform/v1/organizations/acme/relays/relay%2Fid", { method: "DELETE" });
+    await deleteRelay("acme", "relay/id", 3);
+    expect(platformApi).toHaveBeenLastCalledWith("/api/platform/v1/organizations/acme/relays/relay%2Fid", { method: "DELETE", headers: { "If-Match": "3" } });
+  });
+
+  it("uses a new monotonic version when restoring history", async () => {
+    vi.mocked(platformApi).mockResolvedValue({ id: "relay-1", organizationId: "acme", configVersion: 4 });
+    await updateRelay("acme", "relay-1", { config_version: 3, restore_from: 1 });
+    expect(platformApi).toHaveBeenCalledWith("/api/platform/v1/organizations/acme/relays/relay-1", { method: "PATCH", body: { config_version: 3, restore_from: 1 } });
+  });
+
+  it("rejects a configuration from a different tenant or a false save acknowledgement", async () => {
+    vi.mocked(platformApi).mockResolvedValue({ id: "relay-1", organizationId: "other", configVersion: 2 });
+    await expect(getRelay("acme", "relay-1")).rejects.toThrow("格式不正确");
+    vi.mocked(platformApi).mockResolvedValue({ id: "relay-1", organizationId: "acme", configVersion: 3 });
+    await expect(updateRelay("acme", "relay-1", { config_version: 3, restore_from: 1 })).rejects.toThrow("格式不正确");
+  });
+
+  it("validates historical configuration fields and descending unique versions", async () => {
+    const item = { config_version: 1, desired_state: "online", bandwidth_limit: 0, region_name: "原始地区", actor: "system:import", created: "2026-10-10T00:00:00Z" };
+    vi.mocked(platformApi).mockResolvedValue({ items: [item] });
+    expect(await listRelayHistory("acme", "relay-1")).toEqual([item]);
+    for (const items of [[item, item], [item, { ...item, config_version: 2 }], [{ ...item, desired_state: "unknown" }], [{ ...item, bandwidth_limit: -2 }]]) {
+      vi.mocked(platformApi).mockResolvedValue({ items });
+      await expect(listRelayHistory("acme", "relay-1")).rejects.toThrow("格式不正确");
+    }
   });
 
   it("changes the tenant plan with the server's plan_id field, not a silently ignored label", async () => {

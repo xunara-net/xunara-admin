@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import * as ep from "../api/endpoints";
-import { errorMessage } from "../api/client";
-import type { Organization, PlatformRelay, RelayDesiredState, RelayEnrollment, RelayVisibility } from "../api/types";
+import { ApiError, errorMessage } from "../api/client";
+import type { Organization, PlatformRelay, RelayDesiredState, RelayEnrollment, RelayVisibility, RelayConfigurationHistory } from "../api/types";
 import { admin } from "../store";
 import PageHeader from "../components/PageHeader.vue";
 import DataTable from "../components/DataTable.vue";
 import ModalDialog from "../components/ModalDialog.vue";
 import { formatTime, relativeTime } from "../utils/format";
-import { bandwidthText, bytesText, filterRelays, parseBandwidth, relayStatus, relayStatuses } from "../utils/relays";
+import { bandwidthText, bytesText, filterRelays, parseBandwidth, relayStatus, relayStatuses, relayDesiredStateText } from "../utils/relays";
 
 const loading = ref(true);
 const error = ref("");
@@ -25,11 +25,19 @@ const enrollmentOpen = ref(false);
 const enrollmentForm = ref({ organizationID: "", name: "", visibility: "private" as RelayVisibility, hours: 24 });
 const enrollment = ref<RelayEnrollment | null>(null);
 const editing = ref<PlatformRelay | null>(null);
+const configConflict = ref(false);
+const latest = ref<PlatformRelay | null>(null);
+const historyRelay = ref<PlatformRelay | null>(null);
+const history = ref<RelayConfigurationHistory[]>([]);
+const historyLoading = ref(false);
+const historyError = ref("");
+let active = true;
+let historyRequest = 0;
 const configForm = ref({ desiredState: "online" as RelayDesiredState, bandwidth: "0", regionName: "" });
 const visibilityLabels = { private: "私有", organization: "组织内", public: "公共" };
 
 onMounted(load);
-onUnmounted(() => { enrollment.value = null; });
+onUnmounted(() => { active = false; historyRequest++; enrollment.value = null; });
 
 async function load() {
   loading.value = true;
@@ -73,6 +81,7 @@ async function createEnrollment() {
       name: form.name.trim(), visibility: form.visibility, ttl_seconds: form.hours * 3600,
     });
     if (!answer?.token || !answer.item) throw new Error("注册令牌响应不完整，请联系管理员检查");
+    if (!active || !enrollmentOpen.value) return;
     enrollment.value = answer;
   } catch (failure) {
     actionError.value = errorMessage(failure);
@@ -96,6 +105,24 @@ function openConfig(relay: PlatformRelay) {
   editing.value = relay;
   configForm.value = { desiredState: relay.desiredState, bandwidth: String(relay.bandwidthLimit), regionName: relay.regionName ?? "" };
   actionError.value = "";
+  configConflict.value = false; latest.value = null;
+}
+
+async function readLatest() {
+  const relay = editing.value;
+  if (!relay || busy.value) return;
+  busy.value = true;
+  try {
+    const current = await ep.getRelay(relay.organizationId, relay.id);
+    if (active && editing.value === relay) latest.value = current;
+  } catch (failure) { actionError.value = errorMessage(failure); }
+  finally { busy.value = false; }
+}
+
+function acceptLatest() {
+  if (!latest.value) return;
+  // 平台与用户中心共享版本链；显式确认最新基准，但不改动操作方的草稿。
+  editing.value = latest.value; latest.value = null; configConflict.value = false; actionError.value = "";
 }
 
 function closeConfig() {
@@ -119,7 +146,7 @@ async function saveConfig() {
   busy.value = true;
   try {
     const updated = await ep.updateRelay(relay.organizationId, relay.id, {
-      desired_state: nextState, bandwidth_limit: bandwidth, region_name: configForm.value.regionName.trim(),
+      config_version: relay.configVersion, desired_state: nextState, bandwidth_limit: bandwidth, region_name: configForm.value.regionName.trim(),
     });
     relays.value = relays.value.map((item) => item.organizationId === relay.organizationId && item.id === relay.id
       ? { ...updated, organizationName: relay.organizationName } : item);
@@ -127,6 +154,7 @@ async function saveConfig() {
     admin.toast("success", "期望配置已保存，中继在后续心跳获取配置");
   } catch (failure) {
     actionError.value = errorMessage(failure);
+    configConflict.value = failure instanceof ApiError && failure.status === 409;
   } finally {
     busy.value = false;
   }
@@ -136,7 +164,7 @@ async function removeRelay(relay: PlatformRelay) {
   if (busy.value || !window.confirm(`删除中继「${relay.name}」？其长期身份将失效，恢复需要重新注册。`)) return;
   busy.value = true;
   try {
-    await ep.deleteRelay(relay.organizationId, relay.id);
+    await ep.deleteRelay(relay.organizationId, relay.id, relay.configVersion);
     relays.value = relays.value.filter((item) => item.organizationId !== relay.organizationId || item.id !== relay.id);
     admin.toast("success", "中继已删除，其后续心跳将被拒绝");
   } catch (failure) {
@@ -144,6 +172,41 @@ async function removeRelay(relay: PlatformRelay) {
   } finally {
     busy.value = false;
   }
+}
+
+async function openHistory(relay: PlatformRelay) {
+  historyRelay.value = relay; history.value = []; historyError.value = "";
+  await loadHistory();
+}
+
+async function loadHistory() {
+  const relay = historyRelay.value;
+  if (!relay) return;
+  const request = ++historyRequest;
+  historyLoading.value = true; historyError.value = "";
+  try {
+    const [current, items] = await Promise.all([ep.getRelay(relay.organizationId, relay.id), ep.listRelayHistory(relay.organizationId, relay.id)]);
+    if (active && request === historyRequest) { historyRelay.value = { ...current, organizationName: relay.organizationName }; history.value = items; }
+  } catch (failure) { if (active && request === historyRequest) historyError.value = errorMessage(failure); }
+  finally { if (request === historyRequest) historyLoading.value = false; }
+}
+
+function closeHistory() {
+  if (busy.value) return;
+  historyRequest++; historyRelay.value = null; history.value = []; historyLoading.value = false;
+}
+
+async function restore(item: RelayConfigurationHistory) {
+  const relay = historyRelay.value;
+  if (!relay || busy.value || historyLoading.value || historyError.value) return;
+  if (!window.confirm(`恢复 v${item.config_version}（${relayDesiredStateText(item.desired_state)} / ${item.region_name || '未命名地区'} / ${bandwidthText(item.bandwidth_limit)}）？会创建新版本，不恢复已撤销身份或已删除凭据。`)) return;
+  busy.value = true;
+  try {
+    await ep.updateRelay(relay.organizationId, relay.id, { config_version: relay.configVersion, restore_from: item.config_version });
+    admin.toast("success", "历史期望配置已发布为新版本，尚未确认节点实际执行");
+    await Promise.all([loadHistory(), load()]);
+  } catch (failure) { historyError.value = errorMessage(failure); }
+  finally { busy.value = false; }
 }
 </script>
 
@@ -192,6 +255,7 @@ async function removeRelay(relay: PlatformRelay) {
       </template>
       <template #cell-lastSeen="{ row }"><span :title="formatTime(row.lastSeen)">{{ relativeTime(row.lastSeen) }}</span></template>
       <template #cell-actions="{ row }"><div class="row-actions">
+        <button class="btn small" :disabled="busy || loading" @click="openHistory(row)">历史</button>
         <button class="btn small" :disabled="busy || loading" @click="openConfig(row)">配置</button>
         <button class="btn small danger" :disabled="busy || loading" @click="removeRelay(row)">删除</button>
       </div></template>
@@ -225,17 +289,33 @@ async function removeRelay(relay: PlatformRelay) {
   <ModalDialog :title="`配置中继：${editing?.name || ''}`" :open="!!editing" @close="closeConfig">
     <div v-if="actionError" class="alert error relay-notice" role="alert">{{ actionError }}</div>
     <p class="hint relay-notice">所属租户：{{ editing?.organizationId }} · 当前配置版本：{{ editing?.configVersion }}</p>
-    <div class="field"><label for="relay-config-state">期望状态</label><select id="relay-config-state" v-model="configForm.desiredState" class="select" :disabled="busy"><option value="online">正常服务</option><option value="maintenance">维护中</option><option value="disabled">停用</option><option value="revoked">撤销</option></select></div>
+    <button v-if="configConflict && !latest" class="btn relay-notice" :disabled="busy" @click="readLatest">查看最新配置（保留草稿）</button>
+    <div v-if="latest" class="alert info relay-notice"><p>最新 v{{ latest.configVersion }}：{{ relayDesiredStateText(latest.desiredState) }} · {{ latest.regionName || '未命名地区' }} · {{ bandwidthText(latest.bandwidthLimit) }}</p><p>确认最新基准不会改动草稿，仍需手动保存。</p><button class="btn" :disabled="busy" @click="acceptLatest">确认最新基准，保留草稿</button></div>
+    <div class="field"><label for="relay-config-state">期望状态</label><select id="relay-config-state" v-model="configForm.desiredState" class="select" :disabled="busy || editing?.desiredState === 'revoked'"><option value="online">正常服务</option><option value="maintenance">维护中</option><option value="disabled">停用</option><option value="revoked">撤销（不可恢复身份）</option></select></div>
     <div class="field"><label for="relay-config-region">区域显示名</label><input id="relay-config-region" v-model="configForm.regionName" class="input" :disabled="busy" maxlength="128" /></div>
     <div class="field"><label for="relay-config-bandwidth">每连接限速（字节/秒）</label><input id="relay-config-bandwidth" v-model="configForm.bandwidth" class="input" :disabled="busy" type="number" min="-1" step="1" /><div class="help">-1：不限速；0：使用中继本地配置；正数：每连接的字节速率。</div></div>
-    <div class="alert warning">保存的是期望配置，中继在后续心跳获取。离线节点不会立即应用；心跳统计不是计费账单。</div>
-    <template #footer><button class="btn" :disabled="busy" @click="closeConfig">取消</button><button class="btn primary" :disabled="busy" @click="saveConfig">{{ busy ? '正在保存…' : '保存配置' }}</button></template>
+    <div class="alert warning">保存的是期望配置，中继在后续心跳获取，不代表已确认执行。撤销身份不能恢复启用；地图和心跳不等于实时连接或账单。</div>
+    <template #footer><button class="btn" :disabled="busy" @click="closeConfig">取消</button><button class="btn primary" :disabled="busy || configConflict" @click="saveConfig">{{ busy ? '正在保存…' : '保存配置' }}</button></template>
+  </ModalDialog>
+  <ModalDialog title="中继配置历史" :open="!!historyRelay" @close="closeHistory">
+    <p class="hint relay-notice">{{ historyRelay?.organizationId }} · {{ historyRelay?.name }} · 当前 v{{ historyRelay?.configVersion }}</p>
+    <div v-if="historyError" class="alert error relay-notice" role="alert">{{ historyError }}</div>
+    <p v-if="historyLoading" class="hint" role="status">正在读取配置历史…</p>
+    <p v-else-if="!historyError && !history.length" class="hint">首次保存后记录原始配置与后续版本，旧部署的更早变更无法追溯。</p>
+    <article v-for="item in history" :key="item.config_version" class="relay-history-item">
+      <div class="row-actions"><strong>v{{ item.config_version }}</strong><span v-if="item.config_version === historyRelay?.configVersion" class="badge">当前版本</span><button v-else-if="historyRelay?.desiredState !== 'revoked'" class="btn small" :disabled="busy || historyLoading || !!historyError" @click="restore(item)">恢复此配置</button></div>
+      <p>{{ relayDesiredStateText(item.desired_state) }} · {{ item.region_name || '未命名地区' }} · {{ bandwidthText(item.bandwidth_limit) }}</p>
+      <p class="hint">{{ item.actor }} · {{ formatTime(item.created) }}</p>
+    </article>
+    <p class="hint">最多显示最近 50 项；恢复发布为新版本，不恢复凭据、证书、遥测或已撤销身份。</p>
+    <template #footer><button class="btn" :disabled="busy || historyLoading" @click="loadHistory">刷新历史与基准</button><button class="btn" :disabled="busy" @click="closeHistory">关闭</button></template>
   </ModalDialog>
 </template>
 
 <style scoped>
 .relay-notice { margin-bottom: 16px; }
 .relay-filters { display: grid; grid-template-columns: minmax(200px, 2fr) repeat(2, minmax(160px, 1fr)); gap: 12px; }
+.relay-history-item { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin: 12px 0; overflow-wrap: anywhere; }
 textarea.input { height: auto; resize: vertical; }
-@media (max-width: 760px) { .relay-filters { grid-template-columns: 1fr; } }
+@media (max-width: 1000px) { .relay-filters { grid-template-columns: 1fr; } }
 </style>

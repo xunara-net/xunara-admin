@@ -1,5 +1,10 @@
 import type { PlatformRelay } from "../api/types";
 
+export function relayDesiredStateText(state: string): string {
+  const labels: Record<string, string> = { online: "启用", maintenance: "维护中", disabled: "已停用", revoked: "已撤销（不可恢复身份）" };
+  return labels[state] ?? "未知期望状态";
+}
+
 export const relayStatuses = {
   online: { label: "在线", tone: "success" },
   degraded: { label: "降级", tone: "warning" },

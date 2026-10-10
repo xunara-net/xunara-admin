@@ -126,8 +126,16 @@ export interface RelayEnrollment {
   };
 }
 
-export interface RelayConfigUpdate {
+export type RelayConfigUpdate = { config_version: number } & (
+  { desired_state: RelayDesiredState; bandwidth_limit: number; region_name: string; restore_from?: never } |
+  { restore_from: number; desired_state?: never; bandwidth_limit?: never; region_name?: never }
+);
+
+export interface RelayConfigurationHistory {
+  config_version: number;
   desired_state: RelayDesiredState;
   bandwidth_limit: number;
   region_name: string;
+  actor: string;
+  created: string;
 }

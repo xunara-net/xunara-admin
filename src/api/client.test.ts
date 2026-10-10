@@ -34,6 +34,21 @@ describe("platform credential lifecycle", () => {
     vi.unstubAllGlobals();
   });
 
+  it("sends version preconditions in headers without replacing the platform credential", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await platformApi("/api/platform/v1/organizations/acme/relays/relay-1", { method: "DELETE", headers: { "If-Match": "3", Authorization: "untrusted" } });
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({ "If-Match": "3", Authorization: "Bearer test-platform-credential" });
+  });
+
+  it("retains the operator credential on a version conflict and rejects non-JSON success", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "RELAY_CONFIG_CHANGED: stale" }), { status: 409 })));
+    await expect(platformApi("/api/platform/v1/relays")).rejects.toMatchObject({ status: 409, message: expect.stringContaining("草稿保留") });
+    expect(admin.authenticated).toBe(true);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("not-json", { status: 200 })));
+    await expect(platformApi("/api/platform/v1/relays")).rejects.toMatchObject({ status: 502 });
+  });
+
   it("keeps the operator signed in after a quota denial", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("RELAY_LIMIT_REACHED", { status: 403 })));
     await expect(platformApi("/api/platform/v1/relays")).rejects.toMatchObject({ status: 403, message: "RELAY_LIMIT_REACHED" });

@@ -623,8 +623,8 @@ async function main() {
   await legacyPage.waitForURL(origin + '/security?legacy=1');
   assert.equal((await legacyContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json())).authenticated, true);
   await runNetworkSmoke({ page: userPage, memberPage: invitedPage, origin, state, mark, assertSecretNotStored });
-  await runAddressRelaySmoke({ page: userPage, memberPage: invitedPage, origin, mark, upgrade: async () => {
-    const response = await api('/api/platform/v1/organizations/default/plan', platformToken, { plan_id: 'pro' }, 'PATCH');
+  await runAddressRelaySmoke({ page: userPage, memberPage: invitedPage, origin, mark, assignPlan: async (planID) => {
+    const response = await api('/api/platform/v1/organizations/default/plan', platformToken, { plan_id: planID }, 'PATCH');
     assert.equal(response.status, 200);
   } });
   assert.equal(pageErrors.length, 0);
@@ -633,7 +633,7 @@ async function main() {
 
 // 失败输出只有阶段与错误类型，不能把断言中的请求正文或凭据顺带打印。
 main().catch((error) => {
-  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('network-browser-smoke.cjs') || line.includes('relay-history-browser-smoke.cjs'));
+  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('network-browser-smoke.cjs') || line.includes('relay-history-browser-smoke.cjs') || line.includes('address-relay-browser-smoke.cjs'));
   console.error(JSON.stringify({ failed_stage: stage, error_type: error.name, locations }));
   process.exitCode = 1;
 }).finally(async () => {

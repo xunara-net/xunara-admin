@@ -89,6 +89,15 @@ export interface AuditEvent {
 export type RelayVisibility = "private" | "organization" | "public";
 export type RelayDesiredState = "online" | "maintenance" | "disabled" | "revoked";
 
+export interface RelayExecution {
+  config_version: string;
+  applied_version?: string;
+  status: "applied" | "failed";
+  state: "pending" | "online" | "maintenance" | "disabled" | "revoked";
+  bandwidth_limit: number;
+  error_code?: string;
+}
+
 export interface PlatformRelay {
   organizationId: string;
   organizationName?: string;
@@ -112,6 +121,8 @@ export interface PlatformRelay {
   bytesOut?: number;
   createdAt?: string;
   lastSeen?: string;
+  execution?: RelayExecution;
+  executionReportedAt?: string;
 }
 
 export interface RelayEnrollment {

@@ -9,8 +9,12 @@ import DataTable from "../components/DataTable.vue";
 import ModalDialog from "../components/ModalDialog.vue";
 import { formatTime, relativeTime } from "../utils/format";
 import { bandwidthText, bytesText, filterRelays, parseBandwidth, relayStatus, relayStatuses, relayDesiredStateText } from "../utils/relays";
+import { relayExecutionSummary } from "../utils/relay-execution";
 
 const loading = ref(true);
+const executionNow = ref(Date.now());
+const executionTimer = setInterval(() => { executionNow.value = Date.now(); }, 30_000);
+onUnmounted(() => clearInterval(executionTimer));
 const error = ref("");
 const relays = ref<PlatformRelay[]>([]);
 const organizations = ref<Organization[]>([]);
@@ -251,7 +255,10 @@ async function restore(item: RelayConfigurationHistory) {
       <template #cell-metrics="{ row }">
         <div v-if="row.lastSeen">连接 {{ row.connectedClients ?? '—' }} · 接收 {{ bytesText(row.bytesIn) }} / 发送 {{ bytesText(row.bytesOut) }}</div>
         <div v-else class="hint">尚无心跳报告</div>
-        <div class="hint">配置 v{{ row.configVersion }} · {{ bandwidthText(row.bandwidthLimit) }}</div>
+        <div class="hint">期望 v{{ row.configVersion }} · {{ bandwidthText(row.bandwidthLimit) }}</div>
+        <span class="badge" :class="relayExecutionSummary(row, executionNow).tone">{{ relayExecutionSummary(row, executionNow).label }}</span>
+        <div class="hint">{{ relayExecutionSummary(row, executionNow).detail }}</div>
+        <div v-if="row.executionReportedAt" class="hint">回执 {{ formatTime(row.executionReportedAt) }}</div>
       </template>
       <template #cell-lastSeen="{ row }"><span :title="formatTime(row.lastSeen)">{{ relativeTime(row.lastSeen) }}</span></template>
       <template #cell-actions="{ row }"><div class="row-actions">
@@ -294,7 +301,7 @@ async function restore(item: RelayConfigurationHistory) {
     <div class="field"><label for="relay-config-state">期望状态</label><select id="relay-config-state" v-model="configForm.desiredState" class="select" :disabled="busy || editing?.desiredState === 'revoked'"><option value="online">正常服务</option><option value="maintenance">维护中</option><option value="disabled">停用</option><option value="revoked">撤销（不可恢复身份）</option></select></div>
     <div class="field"><label for="relay-config-region">区域显示名</label><input id="relay-config-region" v-model="configForm.regionName" class="input" :disabled="busy" maxlength="128" /></div>
     <div class="field"><label for="relay-config-bandwidth">每连接限速（字节/秒）</label><input id="relay-config-bandwidth" v-model="configForm.bandwidth" class="input" :disabled="busy" type="number" min="-1" step="1" /><div class="help">-1：不限速；0：使用中继本地配置；正数：每连接的字节速率。</div></div>
-    <div class="alert warning">保存的是期望配置，中继在后续心跳获取，不代表已确认执行。撤销身份不能恢复启用；地图和心跳不等于实时连接或账单。</div>
+    <div class="alert warning">维护拒绝新连接但保留既有连接；停用或撤销将断开既有连接。保存后请查看执行回执；撤销身份不能恢复启用，地图和心跳不等于实时连接或账单。</div>
     <template #footer><button class="btn" :disabled="busy" @click="closeConfig">取消</button><button class="btn primary" :disabled="busy || configConflict" @click="saveConfig">{{ busy ? '正在保存…' : '保存配置' }}</button></template>
   </ModalDialog>
   <ModalDialog title="中继配置历史" :open="!!historyRelay" @close="closeHistory">

@@ -3,6 +3,7 @@
 import { platformApi } from "./client";
 import { toOrganization, toPlan } from "./adapters";
 import type { AuditEvent, Organization, OrganizationPayload, Plan, PlatformRelay, PlatformUser, RelayConfigUpdate, RelayConfigurationHistory, RelayEnrollment, RelayVisibility } from "./types";
+import { relayExecutionContract } from "../utils/relay-execution";
 
 export const listOrganizations = async (): Promise<Organization[]> => {
   const answer = await platformApi<{ organizations: OrganizationPayload[] }>("/api/platform/v1/organizations");
@@ -69,7 +70,7 @@ export const listAudit = async (params: { org?: string; limit?: number } = {}): 
 
 export const listRelays = async (): Promise<PlatformRelay[]> => {
   const answer = await platformApi<{ relays: PlatformRelay[] }>("/api/platform/v1/relays");
-  if (!Array.isArray(answer?.relays)) throw new Error("中继列表响应格式不正确");
+  if (!Array.isArray(answer?.relays) || !answer.relays.every((relay) => relay && relayExecutionContract(relay))) throw new Error("中继列表响应格式不正确");
   return answer.relays;
 };
 
@@ -84,7 +85,7 @@ export const createRelayEnrollment = (organizationID: string, body: {
 
 export async function getRelay(organizationID: string, relayID: string) {
   const relay = await platformApi<PlatformRelay>(`/api/platform/v1/organizations/${encodeURIComponent(organizationID)}/relays/${encodeURIComponent(relayID)}`);
-  if (!relay || relay.id !== relayID || relay.organizationId !== organizationID || !Number.isSafeInteger(relay.configVersion) || relay.configVersion < 1) throw new Error("中继配置响应格式不正确");
+  if (!relay || relay.id !== relayID || relay.organizationId !== organizationID || !Number.isSafeInteger(relay.configVersion) || relay.configVersion < 1 || !relayExecutionContract(relay)) throw new Error("中继配置响应格式不正确");
   return relay;
 }
 
@@ -99,7 +100,7 @@ export async function updateRelay(organizationID: string, relayID: string, body:
     `/api/platform/v1/organizations/${encodeURIComponent(organizationID)}/relays/${encodeURIComponent(relayID)}`,
     { method: "PATCH", body },
   );
-  if (!relay || relay.id !== relayID || relay.organizationId !== organizationID || relay.configVersion !== body.config_version + 1) throw new Error("中继配置响应格式不正确，请刷新确认实际结果");
+  if (!relay || relay.id !== relayID || relay.organizationId !== organizationID || relay.configVersion !== body.config_version + 1 || !relayExecutionContract(relay)) throw new Error("中继配置响应格式不正确，请刷新确认实际结果");
   return relay;
 }
 

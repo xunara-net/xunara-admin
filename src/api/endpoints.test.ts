@@ -7,6 +7,18 @@ vi.mock("./client", () => ({ platformApi: vi.fn() }));
 describe("relay platform API contract", () => {
   beforeEach(() => vi.mocked(platformApi).mockReset());
 
+  it("validates optional execution receipts on lists and saved configurations", async () => {
+    const relay = { id: "relay-1", organizationId: "acme", configVersion: 2, desiredState: "online", lastSeen: "2026-10-10T00:00:00Z", executionReportedAt: "2026-10-10T00:00:00Z", execution: { config_version: "2", applied_version: "2", status: "applied", state: "online", bandwidth_limit: 0 } };
+    vi.mocked(platformApi).mockResolvedValue({ relays: [relay] });
+    expect(await listRelays()).toEqual([relay]);
+    const malformed = { ...relay, execution: { ...relay.execution, status: "received" } };
+    vi.mocked(platformApi).mockResolvedValue({ relays: [malformed] });
+    await expect(listRelays()).rejects.toThrow("格式不正确");
+    vi.mocked(platformApi).mockResolvedValue(malformed);
+    await expect(getRelay("acme", "relay-1")).rejects.toThrow("格式不正确");
+    await expect(updateRelay("acme", "relay-1", { config_version: 1, desired_state: "online", bandwidth_limit: 0, region_name: "地区" })).rejects.toThrow("格式不正确");
+  });
+
   it("reads the server's relays envelope", async () => {
     const relays = [{ id: "relay-1", organizationId: "acme" }];
     vi.mocked(platformApi).mockResolvedValue({ relays, count: 1 });

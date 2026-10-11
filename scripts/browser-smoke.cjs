@@ -535,7 +535,7 @@ async function main() {
   const inviteCode = await userPage.getByLabel('一次性邀请码', { exact: true }).inputValue();
   assert.equal(inviteCode.startsWith('xunara_invite_'), true);
   await assertSecretNotStored(userPage, inviteCode);
-  assert.equal(await userPage.getByLabel('注册页面（不含邀请码）', { exact: true }).inputValue(), origin + '/register');
+  assert.equal(await userPage.getByLabel('注册页面（不含邀请码）', { exact: true }).inputValue(), origin + '/register?mode=invite');
   await userPage.getByRole('button', { name: '关闭并清除代码', exact: true }).click();
   assert.equal(await userPage.getByLabel('一次性邀请码', { exact: true }).count(), 0);
   assert.equal((await userPage.content()).includes(inviteCode), false);

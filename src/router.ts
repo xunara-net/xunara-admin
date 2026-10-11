@@ -6,6 +6,7 @@ const routes = [
   { path: "/login", name: "login", component: () => import("./views/LoginView.vue"), meta: { public: true, bare: true } },
   { path: "/dashboard", name: "dashboard", component: () => import("./views/DashboardView.vue") },
   { path: "/tenants", name: "tenants", component: () => import("./views/TenantsView.vue") },
+  { path: "/authentication", name: "authentication", component: () => import("./views/AuthenticationView.vue") },
   { path: "/plans", name: "plans", component: () => import("./views/PlansView.vue") },
   { path: "/users", name: "users", component: () => import("./views/UsersView.vue") },
   { path: "/audit", name: "audit", component: () => import("./views/AuditView.vue") },

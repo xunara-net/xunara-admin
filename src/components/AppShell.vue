@@ -6,6 +6,7 @@ import { admin } from "../store";
 const nav = [
   { to: "/dashboard", label: "平台总览", icon: "📊" },
   { to: "/tenants", label: "租户与网络", icon: "🏢" },
+  { to: "/authentication", label: "登录与注册", icon: "🔐" },
   { to: "/plans", label: "套餐管理", icon: "💎" },
   { to: "/users", label: "用户管理", icon: "👥" },
   { to: "/relays", label: "中继管理", icon: "📡" },
@@ -20,6 +21,7 @@ const menuOpen = ref(false);
 const titles: Record<string, string> = {
   dashboard: "平台总览",
   tenants: "租户与网络",
+  authentication: "登录与注册",
   plans: "套餐管理",
   users: "用户管理",
   relays: "中继管理",

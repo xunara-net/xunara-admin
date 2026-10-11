@@ -21,6 +21,15 @@ const platformErrorMessages: Record<string, string> = {
 };
 
 const platformErrorCodes: Record<string, string> = {
+  AUTH_CONFIG_CHANGED: "登录设置已被其他管理员修改，请刷新核对，不能直接覆盖",
+  AUTH_CONFIG_VERSION_REQUIRED: "缺少登录配置版本，请刷新后保存",
+  AUTH_CONFIG_INVALID: "登录配置无效，请核对应用凭据和公网 HTTPS 地址",
+  AUTH_CONFIG_UNAVAILABLE: "登录配置暂时不可用，请刷新核对实际结果",
+  PROVIDER_ID_RESERVED: "提供方 ID 已被使用或归档，请选择新 ID",
+  PROVIDER_ARCHIVED: "提供方已归档，不能复用其 ID",
+  PROVIDER_NOT_FOUND: "登录提供方不存在，请刷新租户配置",
+  LAST_LOGIN_METHOD: "部分账户只依赖此提供方登录，停用会锁死账户；请先为它们配置其他登录方式",
+  DEPLOYMENT_PROVIDER: "此提供方来自部署配置，只能在页面启停；更换身份域请创建新 ID",
   RELAY_CONFIG_CHANGED: "中继配置已被其他管理员修改，草稿保留，请对照最新版本后继续",
   RELAY_VERSION_REQUIRED: "缺少中继版本，请刷新页面后操作",
   RELAY_CONFIG_INVALID: "中继配置无效，请检查状态、地区名称和整数带宽",

@@ -37,6 +37,12 @@ npm run build      # 产物在 dist/（base=/admin/），由 xunara-deploy 的 n
 | `/login` | 平台令牌登录 |
 | `/dashboard` | 平台总览：租户、用户、设备、套餐分布、最近事件 |
 | `/tenants` | 租户与网络：改套餐、重新分配网段、删除托管租户 |
+| `/authentication` | 按租户管理成员注册、OAuth2/OIDC 应用、密钥轮换与归档；开户入口额外管理公开开户开关 |
+
+登录应用与个人绑定分开；租户所有者不能改平台公开开户，平台面也不依赖租户 Cookie。
+密钥只经请求正文提交，接口不返回明文或密封值，前端不保存应用密钥。部署提供方
+来源明确，身份域不可修改；停用最后登录方式、过期配置覆盖由后端拒绝。
+详见[服务端登录设置手册](https://github.com/xunara-net/xunara-server/blob/main/docs/authentication-settings.md)。
 | `/plans` | 套餐编辑器：配额与能力开关（保存即生效，无需重启） |
 | `/users` | 全平台用户：搜索、强制下线、删除（含最后一名所有者保护） |
 | `/audit` | 跨租户审计（按租户与条数筛选） |
@@ -75,7 +81,14 @@ test_binary="$(mktemp -d)/xunarad"
 (cd ../xunara-server && go build -o "$test_binary" ./cmd/xunarad)
 SMOKE_XUNARAD="$test_binary" PLAYWRIGHT_MODULE=/absolute/path/to/playwright-core \
   CHROMIUM_BINARY=/absolute/path/to/chromium node scripts/browser-smoke.cjs
+SMOKE_XUNARAD="$test_binary" PLAYWRIGHT_MODULE=/absolute/path/to/playwright-core \
+  CHROMIUM_BINARY=/absolute/path/to/chromium node scripts/authentication-browser-smoke.cjs
 ```
+
+第二个脚本额外需要 `openssl`；生成隔离的一日 HTTPS 证书，只信任本次证书公钥，
+不修改系统 CA。覆盖所有者配置邀请、真实受邀注册、公开独立开户、平台开关、
+提供方创建/密钥轮换/归档、租户隔离、版本冲突与 320 / 390 / 768px 弹窗。
+不连接公网 IdP；临时数据库、密钥和应用凭据在结束时清理。
 
 脚本使用隔离临时租户、自动生成内存凭据，覆盖登录存储故障与恢复、租户统计及套餐切换、注册令牌不落存储、
 中继接入/心跳/配置、危险操作确认、配额拒绝保留身份、删除使长期身份失效、加载重试和

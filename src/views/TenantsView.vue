@@ -131,6 +131,7 @@ async function removeOrg(org: Organization) {
         <div class="row-actions">
           <button class="btn small" @click="openPlanDialog(row)">套餐</button>
           <button class="btn small" @click="openNetworkDialog(row)">网段</button>
+          <router-link class="btn small" :to="{ name: 'authentication', query: { org: row.id } }">登录配置</router-link>
           <button v-if="row.managed" class="btn small danger" @click="removeOrg(row)">删除</button>
         </div>
       </template>

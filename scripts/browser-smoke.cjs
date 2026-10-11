@@ -11,6 +11,7 @@ const { runNetworkSmoke } = require('../../xunara-web/scripts/network-browser-sm
 const { runRelayHistorySmoke } = require('../../xunara-web/scripts/relay-history-browser-smoke.cjs');
 const { runAddressRelaySmoke } = require('../../xunara-web/scripts/address-relay-browser-smoke.cjs');
 const { runMemberSmoke } = require('../../xunara-web/scripts/member-browser-smoke.cjs');
+const { createOAuth2Fixture, runOAuth2Smoke } = require('./oauth2-browser-smoke.cjs');
 
 const adminDist = path.resolve(__dirname, '../dist');
 const webDist = path.resolve(__dirname, '../../xunara-web/dist');
@@ -27,6 +28,8 @@ const completed = [];
 let daemon, browser, proxy, origin, control, issuer;
 let issuerOrigin, issuerMode = 'valid', lastAccessToken = '', tokenExchanges = 0;
 let issuerSubject = 'browser-smoke-subject';
+let oauth2Fixture;
+const oauth2Secret = crypto.randomBytes(32).toString('base64url');
 const authorizationCodes = new Map();
 const signingKey = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
 const unrelatedKey = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -50,7 +53,7 @@ async function unusedPort() {
 
 function serve(request, response) {
   const pathname = new URL(request.url, origin).pathname;
-  if (/^\/(api|health|console|setup|oidc)(\/|$)/.test(pathname) || pathname.startsWith('/register/')) {
+  if (/^\/(api|health|console|setup|oidc|oauth2)(\/|$)/.test(pathname) || pathname.startsWith('/register/')) {
     const upstream = http.request(control + request.url, {
       method: request.method, headers: { ...request.headers, host: new URL(origin).host },
     }, (result) => { response.writeHead(result.statusCode, result.headers); result.pipe(response); });
@@ -73,6 +76,7 @@ function serve(request, response) {
 // 它不是生产身份缓存，不会连接公网提供方，也不输出任何凭据。
 async function serveIssuer(request, response) {
   const endpoint = new URL(request.url, issuerOrigin);
+  if (endpoint.pathname.startsWith('/oauth-smoke/')) return oauth2Fixture.serve(request, response);
   const json = (status, body) => { response.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(body)); };
   if (endpoint.pathname === '/.well-known/openid-configuration') {
     json(200, { issuer: issuerOrigin, authorization_endpoint: issuerOrigin + '/authorize', token_endpoint: issuerOrigin + '/token',
@@ -141,11 +145,14 @@ async function main() {
   proxy = http.createServer(serve);
   await new Promise((resolve) => proxy.listen(0, 'localhost', resolve));
   origin = `http://localhost:${proxy.address().port}`;
+  oauth2Fixture = createOAuth2Fixture({ origin, secret: oauth2Secret });
   issuer = http.createServer((request, response) => {
     serveIssuer(request, response).catch(() => { if (!response.headersSent) response.writeHead(500); response.end(); });
   });
   await new Promise((resolve) => issuer.listen(0, '127.0.0.1', resolve));
   issuerOrigin = `http://127.0.0.1:${issuer.address().port}`;
+  const oauth2Config = path.join(state, 'oauth2.json');
+  fs.writeFileSync(oauth2Config, JSON.stringify([{ id: 'smoke-oauth2', type: 'gitlab', display_name: 'OAuth2 验收', client_id: 'browser-oauth2', client_secret_env: 'XUNARA_SMOKE_OAUTH2_SECRET', base_url: issuerOrigin + '/oauth-smoke' }]), { mode: 0o600 });
   const controlPort = await unusedPort();
   control = `http://127.0.0.1:${controlPort}`;
   const log = fs.openSync(path.join(state, 'daemon.log'), 'a', 0o600);
@@ -154,8 +161,8 @@ async function main() {
   // 只创建隔离的临时租户；凭据在进程内生成，经请求正文或环境传递，不出现在参数或输出。
   daemon = spawn(binary, ['-listen', `127.0.0.1:${controlPort}`, '-grpc-listen', '127.0.0.1:0',
     '-server-url', origin, '-state-dir', state, '-plans', 'builtin', '-network-pool', '100.100.0.0/16', '-derp-map', defaultRelayMap, '-log-level', 'error',
-    '-oidc-issuer', issuerOrigin, '-oidc-client-id', 'browser-smoke', '-oidc-id', 'smoke-oidc', '-allow-local-login'], {
-    env: { ...process.env, XUNARA_PLATFORM_ADMIN_TOKEN: platformToken }, stdio: ['ignore', log, log],
+    '-oidc-issuer', issuerOrigin, '-oidc-client-id', 'browser-smoke', '-oidc-id', 'smoke-oidc', '-oauth2-config', oauth2Config, '-allow-local-login'], {
+    env: { ...process.env, XUNARA_PLATFORM_ADMIN_TOKEN: platformToken, XUNARA_SMOKE_OAUTH2_SECRET: oauth2Secret }, stdio: ['ignore', log, log],
   });
   fs.closeSync(log);
   let ready = false;
@@ -719,6 +726,7 @@ async function main() {
   assert.equal((await userContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json())).authenticated, true);
   await ownerSSOContext.close();
   issuerSubject = 'browser-smoke-subject';
+  await runOAuth2Smoke({ browser, origin, ownerPage: userPage, ownerContext: userContext, fixture: oauth2Fixture, mark, assertSecretNotStored, pageErrors });
   await runNetworkSmoke({ page: userPage, memberPage: invitedPage, origin, state, mark, assertSecretNotStored });
   await runAddressRelaySmoke({ page: userPage, memberPage: invitedPage, origin, mark, assignPlan: async (planID) => {
     const response = await api('/api/platform/v1/organizations/default/plan', platformToken, { plan_id: planID }, 'PATCH');
@@ -752,7 +760,7 @@ async function main() {
 
 // 失败输出只有阶段与错误类型，不能把断言中的请求正文或凭据顺带打印。
 main().catch((error) => {
-  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('network-browser-smoke.cjs') || line.includes('relay-history-browser-smoke.cjs') || line.includes('address-relay-browser-smoke.cjs') || line.includes('member-browser-smoke.cjs'));
+  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('network-browser-smoke.cjs') || line.includes('relay-history-browser-smoke.cjs') || line.includes('address-relay-browser-smoke.cjs') || line.includes('member-browser-smoke.cjs') || line.includes('oauth2-browser-smoke.cjs'));
   console.error(JSON.stringify({ failed_stage: stage, error_type: error.name, locations }));
   process.exitCode = 1;
 }).finally(async () => {

@@ -61,6 +61,11 @@ npm run build      # 产物在 dist/（base=/admin/），由 xunara-deploy 的 n
 
 ## 浏览器集成验收
 
+夹具同时覆盖真实 OIDC/JWKS 和无 ID Token 的 GitLab 风格 OAuth2 授权码、S256
+及当前用户接口。原生 OAuth2 覆盖邀请门禁、受邀成员、绑定/解绑、同一发起会话、
+state 与事务重放、错误资料、最后登录方法和来源会话撤销，并检查手机宽度。
+它不使用公网应用或生产状态，不代表第三方提供方已在正式部署启用。
+
 前置：六仓库同级放置，已构建 `xunara-web` / `xunara-admin`，本机可运行 Chromium，
 并安装 `playwright-core`（通过 `PLAYWRIGHT_MODULE` 指向模块，不要求加入运行时依赖）。
 以下在 `xunara-admin` 仓库执行，不连接或修改生产环境：

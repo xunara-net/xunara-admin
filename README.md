@@ -44,7 +44,7 @@ npm run build      # 产物在 dist/（base=/admin/），由 xunara-deploy 的 n
 来源明确，身份域不可修改；停用最后登录方式、过期配置覆盖由后端拒绝。
 详见[服务端登录设置手册](https://github.com/xunara-net/xunara-server/blob/main/docs/authentication-settings.md)。
 | `/plans` | 套餐编辑器：配额与能力开关（保存即生效，无需重启） |
-| `/users` | 全平台用户：搜索 / 状态筛选、带原因与版本确认的禁用 / 解禁、强制下线、删除；保护最后启用 owner |
+| `/users` | 全平台用户：搜索 / 状态筛选、版本保护的禁用 / 解禁、核实持有人后一次性密码重置码、强制下线、删除；保护最后启用 owner |
 | `/audit` | 跨租户审计（按租户与条数筛选） |
 | `/relays` | 托管中继列表/筛选、一次性注册令牌、版本保护的期望配置/历史恢复与删除 |
 | `/system` | 系统信息与安全说明 |
@@ -95,6 +95,13 @@ SMOKE_XUNARAD="$test_binary" PLAYWRIGHT_MODULE=/absolute/path/to/playwright-core
 不修改系统 CA。覆盖所有者配置邀请、真实受邀注册、公开独立开户、平台开关、
 提供方创建/密钥轮换/归档、租户隔离、版本冲突与 320 / 390 / 768px 弹窗。
 不连接公网 IdP；临时数据库、密钥和应用凭据在结束时清理。
+
+此脚本还验证密码恢复的核实确认、取消无写入、版本冲突 / 显式刷新、一次性码不
+进入持久存储或 URL、生成 / 兑换必需审计的真实故障回滚、重启持久化与新旧密码。
+后台生成不改密码、不退出登录；用户在本网络 `/reset-password` 输入码后才兑换。
+关闭弹窗清除本页原码，只能读取待用期限；核实身份和交付渠道由平台运营者负责，
+不使用未验证邮箱自动找回。流程与 identity v17 升级以
+[服务端手册](https://github.com/xunara-net/xunara-server/blob/main/docs/password-recovery.md) 为准。
 
 脚本使用隔离临时租户、自动生成内存凭据，覆盖登录存储故障与恢复、租户统计及套餐切换、注册令牌不落存储、
 中继接入/心跳/配置、危险操作确认、配额拒绝保留身份、删除使长期身份失效、加载重试和

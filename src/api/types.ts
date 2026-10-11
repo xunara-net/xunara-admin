@@ -77,6 +77,8 @@ export interface PlatformUser {
   disabled?: boolean;
   disabledAt?: string;
   disabledReason?: string;
+  passwordResetAvailable?: boolean;
+  passwordResetExpiresAt?: string;
 }
 
 export interface AuditEvent {

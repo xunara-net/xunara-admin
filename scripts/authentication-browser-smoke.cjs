@@ -420,6 +420,177 @@ async function main() {
   await invitedPage.getByRole('button', { name: '登录', exact: true }).click();
   await invitedPage.waitForURL('**/dashboard');
   assert.equal((await browserAPI(invitedPage, '/api/v1/account')).status(), 200);
+  mark('password-recovery-platform-ownership-cancellation-cas-and-mobile');
+  const resetPath = `/api/platform/v1/organizations/portal/users/${member.id}/password-reset`;
+  let generations = 0;
+  adminPage.on('request', (request) => { if (new URL(request.url()).pathname === resetPath && request.method() === 'POST') generations++; });
+  const resetRow = () => adminPage.locator('tbody tr').filter({ hasText: 'invited-member' });
+  for (const width of [320, 390, 768]) {
+    await adminPage.setViewportSize({ width, height: 844 });
+    await resetRow().getByRole('button', { name: '重置密码', exact: true }).click();
+    await adminPage.getByRole('dialog').waitFor();
+    assert.equal(await adminPage.getByRole('button', { name: '确认生成重置码', exact: true }).isDisabled(), true);
+    assert.equal(await adminPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+    const box = await adminPage.getByRole('dialog').boundingBox();
+    assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= width + 1 && box.y + box.height <= 845);
+    await adminPage.getByLabel('重置原因（必填）', { exact: true }).fill('取消不生成');
+    await adminPage.getByLabel('我已通过可靠渠道核实账号持有人', { exact: true }).check();
+    await adminPage.getByRole('button', { name: '取消', exact: true }).click();
+  }
+  assert.equal(generations, 0);
+  await resetRow().getByRole('button', { name: '重置密码', exact: true }).click();
+  assert.equal(await adminPage.getByLabel('重置原因（必填）', { exact: true }).inputValue(), '');
+  await adminPage.getByLabel('重置原因（必填）', { exact: true }).fill('已独立核实持有人');
+  await adminPage.getByLabel('我已通过可靠渠道核实账号持有人', { exact: true }).check();
+  const beforeReset = (await api('/api/platform/v1/users').then((response) => response.json())).users.find((user) => user.org === 'portal' && user.id === member.id);
+  const ownerAccount = await browserAPI(ownerPage, '/api/v1/account').then((response) => response.json());
+  assert.equal((await browserAPI(ownerPage, `/api/v1/users/${member.id}`, { method: 'PATCH', headers: { 'X-CSRF-Token': ownerAccount.csrf_token },
+    body: { displayName: '恢复前已复核', expectedUpdatedAt: beforeReset.updatedAt } })).status(), 200);
+  const resetConflict = adminPage.waitForResponse((response) => response.url().endsWith('/password-reset') && response.request().method() === 'POST');
+  await adminPage.getByRole('button', { name: '确认生成重置码', exact: true }).click();
+  assert.equal((await resetConflict).status(), 409);
+  assert.equal(await adminPage.getByLabel('重置原因（必填）', { exact: true }).inputValue(), '已独立核实持有人');
+  assert.equal(await adminPage.getByRole('button', { name: '确认生成重置码', exact: true }).isDisabled(), true);
+  await adminPage.getByRole('button', { name: '刷新核对账号', exact: true }).click();
+  await adminPage.getByText('已刷新真实状态，请重新核实持有人并确认；再次生成会使此前的码失效', { exact: true }).waitFor();
+  assert.equal(await adminPage.getByLabel('我已通过可靠渠道核实账号持有人', { exact: true }).isChecked(), false);
+  await adminPage.getByLabel('我已通过可靠渠道核实账号持有人', { exact: true }).check();
+  const firstResetResponse = adminPage.waitForResponse((response) => response.url().endsWith('/password-reset') && response.request().method() === 'POST');
+  await adminPage.getByRole('button', { name: '确认生成重置码', exact: true }).click();
+  const firstReset = await firstResetResponse;
+  assert.equal(firstReset.status(), 201);
+  const firstCode = (await firstReset.json()).code;
+  assert.equal(await adminPage.getByLabel('一次性密码重置码', { exact: true }).inputValue(), firstCode);
+  const stored = new DatabaseSync(path.join(state, 'portal/state.db'), { readOnly: true });
+  let originalCredential;
+  try {
+    originalCredential = stored.prepare('SELECT password_hash, CAST(updated_at AS TEXT) AS revision FROM local_credentials WHERE user_id = ?').get(member.id);
+    assert.equal(stored.prepare('SELECT token_hash FROM password_reset_tickets WHERE user_id = ?').get(member.id).token_hash, crypto.createHash('sha256').update(firstCode).digest('hex'));
+  } finally { stored.close(); }
+  for (const width of [320, 390, 768]) {
+    await adminPage.setViewportSize({ width, height: 844 });
+    assert.equal(await adminPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+  }
+  assert.equal((await browserAPI(invitedPage, '/api/v1/account')).status(), 200);
+  assert.equal((await browserAPI(ownerPage, resetPath, { method: 'POST', body: { reason: '无平台权限', expected_updated_at: beforeReset.updatedAt, ownership_verified: true } })).status(), 401);
+  await adminPage.getByRole('button', { name: '关闭并清除本页重置码', exact: true }).click();
+  assert.equal((await adminPage.locator('body').innerText()).includes(firstCode), false);
+
+  mark('password-recovery-public-form-keeps-secrets-out-of-storage-and-failed-audit-rolls-back');
+  const replacementPassword = crypto.randomBytes(24).toString('base64url');
+  await invitedPage.goto(origin + '/login');
+  await invitedPage.getByRole('link', { name: '忘记密码', exact: true }).click();
+  await invitedPage.getByLabel('一次性重置码', { exact: true }).fill(firstCode);
+  await invitedPage.getByLabel('新密码', { exact: true }).fill(replacementPassword);
+  await invitedPage.getByLabel('确认新密码', { exact: true }).fill('different confirmation');
+  let redemptions = 0;
+  invitedPage.on('request', (request) => {
+    assert.equal(request.url().includes(firstCode), false);
+    assert.equal(request.url().includes(replacementPassword), false);
+    if (new URL(request.url()).pathname === '/api/v1/auth/password-reset' && request.method() === 'POST') redemptions++;
+  });
+  await invitedPage.getByRole('button', { name: '确认重置密码', exact: true }).click();
+  await invitedPage.getByRole('alert').filter({ hasText: '两次输入的新密码不一致' }).waitFor();
+  assert.equal(redemptions, 0);
+  for (const width of [320, 390, 768]) {
+    await invitedPage.setViewportSize({ width, height: 844 });
+    assert.equal(await invitedPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+  }
+  await invitedPage.getByLabel('确认新密码', { exact: true }).fill(replacementPassword);
+  const auditFault = new DatabaseSync(path.join(state, 'portal/state.db'));
+  try { auditFault.exec("CREATE TRIGGER password_reset_audit_fault BEFORE INSERT ON audit_events WHEN NEW.action = 'user.password_reset_used' BEGIN SELECT RAISE(ABORT, 'isolated reset audit failure'); END"); }
+  finally { auditFault.close(); }
+  const failedReset = invitedPage.waitForResponse((response) => response.url().endsWith('/auth/password-reset') && response.request().method() === 'POST');
+  await invitedPage.getByRole('button', { name: '确认重置密码', exact: true }).click();
+  assert.equal((await failedReset).status(), 503);
+  await invitedPage.getByText('尚未确认提交结果。请先尝试使用新密码登录；若不能登录，再联系管理员核对并重新生成。不会自动重试。', { exact: true }).waitFor();
+  assert.equal(await invitedPage.getByRole('button', { name: '确认重置密码', exact: true }).isDisabled(), true);
+  assert.equal(await invitedPage.getByLabel('一次性重置码', { exact: true }).inputValue(), firstCode);
+  const checkedReset = new DatabaseSync(path.join(state, 'portal/state.db'));
+  try {
+    assert.deepEqual(checkedReset.prepare('SELECT password_hash, CAST(updated_at AS TEXT) AS revision FROM local_credentials WHERE user_id = ?').get(member.id), originalCredential);
+    assert.equal(checkedReset.prepare('SELECT COUNT(*) AS count FROM password_reset_tickets WHERE user_id = ?').get(member.id).count, 1);
+    checkedReset.exec('DROP TRIGGER password_reset_audit_fault');
+  } finally { checkedReset.close(); }
+  assert.equal((await browserAPI(invitedPage, '/api/v1/account')).status(), 200);
+
+  mark('password-recovery-issuance-audit-failure-preserves-the-existing-code-and-draft');
+  await resetRow().getByRole('button', { name: '重置密码', exact: true }).click();
+  await adminPage.getByLabel('重置原因（必填）', { exact: true }).fill('核对失败结果后重新生成');
+  await adminPage.getByLabel('我已通过可靠渠道核实账号持有人', { exact: true }).check();
+  const issuanceFault = new DatabaseSync(path.join(state, 'portal/state.db'));
+  let oldResetHash;
+  try {
+    oldResetHash = issuanceFault.prepare('SELECT token_hash FROM password_reset_tickets WHERE user_id = ?').get(member.id).token_hash;
+    issuanceFault.exec("CREATE TRIGGER password_reset_issuance_fault BEFORE INSERT ON audit_events WHEN NEW.action = 'user.password_reset_issued' BEGIN SELECT RAISE(ABORT, 'isolated issuance audit failure'); END");
+  } finally { issuanceFault.close(); }
+  const failedIssuance = adminPage.waitForResponse((response) => response.url().endsWith('/password-reset') && response.request().method() === 'POST');
+  await adminPage.getByRole('button', { name: '确认生成重置码', exact: true }).click();
+  assert.equal((await failedIssuance).status(), 503);
+  assert.equal(await adminPage.getByLabel('重置原因（必填）', { exact: true }).inputValue(), '核对失败结果后重新生成');
+  assert.equal(await adminPage.getByRole('button', { name: '确认生成重置码', exact: true }).isDisabled(), true);
+  const checkedIssuance = new DatabaseSync(path.join(state, 'portal/state.db'));
+  try {
+    assert.equal(checkedIssuance.prepare('SELECT token_hash FROM password_reset_tickets WHERE user_id = ?').get(member.id).token_hash, oldResetHash);
+    checkedIssuance.exec('DROP TRIGGER password_reset_issuance_fault');
+  } finally { checkedIssuance.close(); }
+  await adminPage.getByRole('button', { name: '刷新核对账号', exact: true }).click();
+  await adminPage.getByText('已刷新真实状态，请重新核实持有人并确认；再次生成会使此前的码失效', { exact: true }).waitFor();
+  await adminPage.getByLabel('我已通过可靠渠道核实账号持有人', { exact: true }).check();
+  const secondResetResponse = adminPage.waitForResponse((response) => response.url().endsWith('/password-reset') && response.request().method() === 'POST');
+  await adminPage.getByRole('button', { name: '确认生成重置码', exact: true }).click();
+  const secondReset = await secondResetResponse;
+  assert.equal(secondReset.status(), 201);
+  const secondCode = (await secondReset.json()).code;
+  assert.notEqual(secondCode, firstCode);
+  await adminPage.getByRole('button', { name: '关闭并清除本页重置码', exact: true }).click();
+
+  mark('password-recovery-pending-code-survives-a-real-daemon-restart-and-rejects-previous-code');
+  const resetExit = new Promise((resolve) => daemon.once('exit', resolve));
+  daemon.kill('SIGTERM'); await resetExit;
+  daemon = launchDaemon(daemonArguments);
+  ready = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { if ((await api('/health')).ok) { ready = true; break; } } catch {}
+    if (daemon.exitCode !== null) throw new Error('reset daemon restart failed');
+    await sleep(100);
+  }
+  assert.equal(ready, true);
+  assert.equal((await browserAPI(invitedPage, '/api/v1/account')).status(), 200);
+  assert.equal((await browserAPI(invitedPage, '/api/v1/auth/password-reset', { method: 'POST', body: { code: firstCode, new_password: replacementPassword, confirm_password: replacementPassword } })).status(), 400);
+  await invitedPage.goto(origin + '/reset-password?code=not-a-secret');
+  await invitedPage.waitForURL((url) => url.pathname === '/reset-password' && url.search === '');
+  await invitedPage.getByLabel('一次性重置码', { exact: true }).waitFor();
+  assert.equal(await invitedPage.getByLabel('一次性重置码', { exact: true }).inputValue(), '');
+
+  mark('password-recovery-atomic-redemption-signs-out-only-the-account-and-requires-normal-login');
+  await invitedPage.getByLabel('一次性重置码', { exact: true }).fill(secondCode);
+  await invitedPage.getByLabel('新密码', { exact: true }).fill(replacementPassword);
+  await invitedPage.getByLabel('确认新密码', { exact: true }).fill(replacementPassword);
+  const completedReset = invitedPage.waitForResponse((response) => response.url().endsWith('/auth/password-reset') && response.request().method() === 'POST');
+  await invitedPage.getByRole('button', { name: '确认重置密码', exact: true }).click();
+  assert.equal((await completedReset).status(), 200);
+  await invitedPage.getByText('密码已重置，原浏览器登录已退出。请使用新密码重新登录。', { exact: true }).waitFor();
+  assert.equal((await browserAPI(invitedPage, '/api/v1/account')).status(), 401);
+  assert.equal((await browserAPI(ownerPage, '/api/v1/account')).status(), 200);
+  assert.equal((await browserAPI(newPage, '/api/v1/account')).status(), 200);
+  assert.equal((await browserAPI(invitedPage, '/api/v1/auth/password-reset', { method: 'POST', body: { code: secondCode, new_password: replacementPassword, confirm_password: replacementPassword } })).status(), 400);
+  assert.equal((await browserAPI(invitedPage, '/api/v1/auth/login', { method: 'POST', body: { login: 'invited-member', password } })).status(), 401);
+  await invitedPage.getByRole('link', { name: '返回登录', exact: true }).click();
+  await invitedPage.getByLabel('登录名', { exact: true }).fill('invited-member');
+  await invitedPage.getByLabel('密码', { exact: true }).fill(replacementPassword);
+  await invitedPage.getByRole('button', { name: '登录', exact: true }).click();
+  await invitedPage.waitForURL('**/dashboard');
+  assert.equal((await browserAPI(invitedPage, '/api/v1/account')).status(), 200);
+  for (const page of [adminPage, invitedPage]) {
+    const storage = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
+    for (const secret of [firstCode, secondCode, replacementPassword]) {
+      assert.equal(storage.includes(secret), false);
+      assert.equal(page.url().includes(secret), false);
+    }
+  }
+  const daemonLog = fs.readFileSync(path.join(state, 'daemon.log'), 'utf8');
+  assert.equal(daemonLog.includes(firstCode) || daemonLog.includes(secondCode) || daemonLog.includes(replacementPassword), false);
   assert.deepEqual(errors, []);
   mark('authentication-management-real-https-complete');
   console.log(JSON.stringify({ result: 'passed', stages: completed.length, pageErrors: 0, publicProvidersContacted: false }));

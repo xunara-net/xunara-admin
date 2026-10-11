@@ -11,7 +11,7 @@ export interface UserStatusResult {
   revoked: number;
 }
 
-function isTimestamp(value: unknown): value is string {
+export function isTimestamp(value: unknown): value is string {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
 }
 
@@ -25,6 +25,9 @@ export function parsePlatformUsers(payload: unknown): PlatformUser[] {
       (user.updatedAt !== undefined && !isTimestamp(user.updatedAt)) ||
       (user.disabledReason !== undefined && typeof user.disabledReason !== "string") ||
       (user.disabledAt !== undefined && !isTimestamp(user.disabledAt)) ||
+      (user.passwordResetAvailable !== undefined && typeof user.passwordResetAvailable !== "boolean") ||
+      (user.passwordResetAvailable === true && user.disabled !== false) ||
+      (user.passwordResetExpiresAt !== undefined && (!isTimestamp(user.passwordResetExpiresAt) || user.passwordResetAvailable !== true)) ||
       (user.disabled === true && (!user.disabledAt || !user.disabledReason)) ||
       (user.disabled === false && (user.disabledAt || user.disabledReason))) {
       throw new Error("用户状态响应格式不正确，请刷新核对");

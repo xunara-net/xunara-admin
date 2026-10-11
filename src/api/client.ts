@@ -21,6 +21,11 @@ const platformErrorMessages: Record<string, string> = {
 };
 
 const platformErrorCodes: Record<string, string> = {
+  PASSWORD_RESET_CHANGED: "账号已被其他操作修改，请刷新核对后重新确认；不会自动重新生成",
+  PASSWORD_RESET_VERSION_REQUIRED: "缺少完整账号版本，请刷新后生成重置码",
+  PASSWORD_RESET_REQUEST_INVALID: "请核实持有人并填写 1～256 字的单行重置原因",
+  PASSWORD_RESET_NOT_AVAILABLE: "账号未启用本地密码或已被禁用，不能生成重置码",
+  PASSWORD_RESET_UNAVAILABLE: "恢复服务暂时不可用，结果需刷新核对；不要连续重复生成",
   USER_STATUS_CHANGED: "账号已被其他操作修改，请刷新核对后重新确认",
   USER_VERSION_REQUIRED: "缺少账号版本，请刷新后操作",
   USER_STATUS_INVALID: "账号状态无效，请填写 1～256 字的单行操作原因",

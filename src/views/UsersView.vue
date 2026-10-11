@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import * as ep from "../api/endpoints";
 import { ApiError, errorMessage } from "../api/client";
 import { setUserStatus } from "../api/user-status";
+import { canResetPassword, issuePasswordReset, type PasswordResetIssuance } from "../api/password-reset";
 import type { PlatformUser } from "../api/types";
 import { admin } from "../store";
 import PageHeader from "../components/PageHeader.vue";
@@ -21,6 +22,15 @@ const desiredDisabled = ref(false);
 const reason = ref("");
 const statusError = ref("");
 const needsRefresh = ref(false);
+const resetSelected = ref<PlatformUser | null>(null);
+const resetReason = ref("");
+const ownershipVerified = ref(false);
+const resetIssued = ref<PasswordResetIssuance | null>(null);
+const resetError = ref("");
+const resetNeedsRefresh = ref(false);
+let disposed = false;
+
+onUnmounted(() => { disposed = true; resetIssued.value = null; resetSelected.value = null; resetReason.value = ""; });
 
 const filtered = computed(() => {
   const term = search.value.trim().toLowerCase();
@@ -130,6 +140,62 @@ async function saveStatus() {
     busy.value = false;
   }
 }
+
+function openReset(user: PlatformUser) {
+  if (busy.value || loading.value || error.value || !canResetPassword(user)) return;
+  resetSelected.value = { ...user };
+  resetReason.value = "";
+  ownershipVerified.value = false;
+  resetIssued.value = null;
+  resetError.value = "";
+  resetNeedsRefresh.value = false;
+}
+
+function closeReset() {
+  if (busy.value) return;
+  resetSelected.value = null;
+  resetReason.value = "";
+  ownershipVerified.value = false;
+  resetIssued.value = null;
+  resetError.value = "";
+}
+
+async function refreshReset() {
+  if (busy.value || !resetSelected.value) return;
+  await load();
+  if (error.value) return;
+  const latest = users.value.find((user) => user.org === resetSelected.value?.org && user.id === resetSelected.value?.id);
+  if (!latest) { resetError.value = "账号已不在列表中，请关闭弹窗核对"; return; }
+  resetSelected.value = { ...latest };
+  resetNeedsRefresh.value = false;
+  // 刷新不会取回已显示一次的码，也不会自动重新生成；必须重新确认核实和写入。
+  ownershipVerified.value = false;
+  resetError.value = "已刷新真实状态，请重新核实持有人并确认；再次生成会使此前的码失效";
+}
+
+async function generateReset() {
+  if (busy.value || loading.value || error.value || resetIssued.value || resetNeedsRefresh.value || !resetSelected.value || !canResetPassword(resetSelected.value)) return;
+  busy.value = true;
+  resetError.value = "";
+  try {
+    const issued = await issuePasswordReset(resetSelected.value, resetReason.value, ownershipVerified.value);
+    if (disposed) return;
+    resetIssued.value = issued;
+    await load();
+  } catch (err) {
+    if (disposed) return;
+    resetError.value = errorMessage(err);
+    resetNeedsRefresh.value = !(err instanceof ApiError && err.status === 400);
+  } finally { busy.value = false; }
+}
+
+async function copyResetCode() {
+  if (!resetIssued.value) return;
+  try {
+    await navigator.clipboard.writeText(resetIssued.value.code);
+    admin.toast("success", "已复制，请通过已核实的独立渠道交付并清理剪贴板");
+  } catch { resetError.value = "浏览器未允许复制，请在文本框中手动复制；不要把码加入网址"; }
+}
 </script>
 
 <template>
@@ -181,6 +247,7 @@ async function saveStatus() {
       <template #cell-login="{ row }">
         <div>{{ row.displayName || row.login }}</div>
         <div class="mono" style="color: var(--text-faint); font-size: 12px">{{ row.login }}<template v-if="row.email"> · {{ row.email }}</template></div>
+        <div v-if="row.passwordResetExpiresAt" class="status-detail">待用重置码 · {{ formatTime(row.passwordResetExpiresAt) }} 到期</div>
       </template>
       <template #cell-org="{ row }">{{ row.orgName || row.org }}</template>
       <template #cell-role="{ row }"><span class="badge" :class="row.role === 'owner' ? 'primary' : ''">{{ roleLabel(row.role) }}</span></template>
@@ -194,6 +261,7 @@ async function saveStatus() {
       <template #cell-actions="{ row }">
         <div class="row-actions">
           <button class="btn small" :disabled="busy || loading || !!error || cannotChangeStatus(row)" :title="cannotChangeStatus(row) ? '最后一位启用的所有者或缺少状态版本，不能禁用' : ''" @click="openStatus(row)">{{ row.disabled ? '解禁' : '禁用' }}</button>
+          <button class="btn small" :disabled="busy || loading || !!error || !canResetPassword(row)" :title="!canResetPassword(row) ? '账号须启用且已有本地密码；缺少版本或能力时请先升级服务端' : ''" @click="openReset(row)">重置密码</button>
           <button class="btn small" :disabled="busy || loading || !!error" @click="forceLogout(row)">强制下线</button>
           <button class="btn small danger" :disabled="busy || loading || !!error" @click="remove(row)">删除</button>
         </div>
@@ -217,6 +285,36 @@ async function saveStatus() {
       <button class="btn primary" :disabled="busy || loading || !!error || needsRefresh || !reason.trim() || selected?.disabled === desiredDisabled" @click="saveStatus">{{ busy ? '提交中…' : desiredDisabled ? '确认禁用' : '确认解禁' }}</button>
     </template>
   </ModalDialog>
+
+  <ModalDialog :open="!!resetSelected" :title="resetIssued ? '重置码已生成' : '生成密码重置码'" @close="closeReset">
+    <div v-if="resetSelected" class="status-form">
+      <div><strong>{{ resetSelected.displayName || resetSelected.login }}</strong><div class="status-detail">{{ resetSelected.orgName || resetSelected.org }} · {{ resetSelected.login }}</div></div>
+      <template v-if="resetIssued">
+        <div class="alert info">原码仅显示这一次，关闭后不能再次查看。请在本账号所属网络的 /reset-password 页面手动输入，不要加入网址。</div>
+        <label for="password-reset-code">一次性密码重置码</label>
+        <textarea id="password-reset-code" class="input mono reset-code" :value="resetIssued.code" readonly autocomplete="off" spellcheck="false" />
+        <div>有效期至 {{ formatTime(resetIssued.expiresAt) }}（15 分钟）。</div>
+        <p>生成未修改密码或退出登录。只有用户提交有效码和新密码后，旧密码及本账户原有浏览器登录才会失效；设备、中继及其他登录绑定不变。</p>
+      </template>
+      <template v-else>
+        <p>请先通过可靠渠道核实账号持有人，不能仅凭未经验证的联系邮箱判断身份。管理员不会看到旧密码，也不替用户设置新密码。</p>
+        <div class="alert">生成不修改密码、不退出登录。有效码兑换后撤销本账户全部浏览器登录，但不会断开组网设备、撤销 API Key 或移除第三方 / 通行密钥绑定。</div>
+        <div v-if="resetSelected.passwordResetExpiresAt" class="alert info">当前已有待用码，{{ formatTime(resetSelected.passwordResetExpiresAt) }} 到期。再次生成将使原码失效。</div>
+        <label for="password-reset-reason">重置原因（必填）</label>
+        <input id="password-reset-reason" v-model="resetReason" class="input" maxlength="256" :disabled="busy" placeholder="不要输入密码、重置码或证件资料" />
+        <label class="reset-confirmation"><input v-model="ownershipVerified" type="checkbox" :disabled="busy" />我已通过可靠渠道核实账号持有人</label>
+      </template>
+      <div v-if="resetError" class="alert error" role="alert">{{ resetError }}</div>
+    </div>
+    <template #footer>
+      <button class="btn" :disabled="busy || loading" @click="closeReset">{{ resetIssued ? '关闭并清除本页重置码' : '取消' }}</button>
+      <button v-if="resetIssued" class="btn primary" @click="copyResetCode">复制重置码</button>
+      <template v-else>
+        <button v-if="resetNeedsRefresh" class="btn" :disabled="busy || loading" @click="refreshReset">刷新核对账号</button>
+        <button class="btn primary" :disabled="busy || loading || !!error || resetNeedsRefresh || !ownershipVerified || !resetReason.trim() || !resetSelected || !canResetPassword(resetSelected)" @click="generateReset">{{ busy ? '生成中…' : '确认生成重置码' }}</button>
+      </template>
+    </template>
+  </ModalDialog>
 </template>
 
 <style scoped>
@@ -224,4 +322,7 @@ async function saveStatus() {
 .status-detail { color: var(--text-faint); font-size: 12px; overflow-wrap: anywhere; max-width: 260px; }
 .status-form { display: grid; gap: 12px; overflow-wrap: anywhere; }
 .status-form p { margin: 0; }
+.reset-confirmation { display: flex; align-items: flex-start; gap: 8px; line-height: 1.6; }
+.reset-confirmation input { margin-top: 4px; flex-shrink: 0; }
+.reset-code { min-height: 74px; width: 100%; resize: vertical; overflow-wrap: anywhere; }
 </style>

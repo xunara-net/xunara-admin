@@ -10,6 +10,7 @@ const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const { DatabaseSync } = require('node:sqlite');
 const { runLoginHistorySmoke } = require('../../xunara-web/scripts/login-history-browser-smoke.cjs');
+const { runAccountExportSmoke } = require('../../xunara-web/scripts/account-export-browser-smoke.cjs');
 
 const binary = process.env.SMOKE_XUNARAD;
 const webDist = path.resolve(__dirname, '../../xunara-web/dist');
@@ -602,6 +603,7 @@ async function main() {
     }
     assert.equal(ready, true);
   } });
+  await runAccountExportSmoke({ page: ownerPage, origin, databaseFile: path.join(state, 'portal/state.db'), mark });
   const daemonLog = fs.readFileSync(path.join(state, 'daemon.log'), 'utf8');
   assert.equal(daemonLog.includes(firstCode) || daemonLog.includes(secondCode) || daemonLog.includes(replacementPassword), false);
   assert.deepEqual(errors, []);
@@ -610,7 +612,7 @@ async function main() {
 }
 main().catch((error) => {
   console.error(JSON.stringify({ result: 'failed', stage, errorType: error.name,
-    locations: error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('login-history-browser-smoke.cjs')) }));
+    locations: error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('login-history-browser-smoke.cjs') || line.includes('account-export-browser-smoke.cjs')) }));
   process.exitCode = 1;
 }).finally(async () => {
   if (browser) await browser.close();

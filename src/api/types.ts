@@ -73,6 +73,10 @@ export interface PlatformUser {
   sessions: number;
   lastSeen?: string;
   createdAt: string;
+  updatedAt?: string;
+  disabled?: boolean;
+  disabledAt?: string;
+  disabledReason?: string;
 }
 
 export interface AuditEvent {

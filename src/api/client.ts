@@ -21,6 +21,12 @@ const platformErrorMessages: Record<string, string> = {
 };
 
 const platformErrorCodes: Record<string, string> = {
+  USER_STATUS_CHANGED: "账号已被其他操作修改，请刷新核对后重新确认",
+  USER_VERSION_REQUIRED: "缺少账号版本，请刷新后操作",
+  USER_STATUS_INVALID: "账号状态无效，请填写 1～256 字的单行操作原因",
+  USER_STATUS_UNAVAILABLE: "账号状态暂时不可用，提交结果需刷新核对，请勿直接重复提交",
+  USER_NOT_FOUND: "账号或租户不存在，请刷新列表",
+  LAST_ACTIVE_OWNER: "不能禁用最后一位启用的所有者，请先指定另一位可登录的所有者",
   AUTH_CONFIG_CHANGED: "登录设置已被其他管理员修改，请刷新核对，不能直接覆盖",
   AUTH_CONFIG_VERSION_REQUIRED: "缺少登录配置版本，请刷新后保存",
   AUTH_CONFIG_INVALID: "登录配置无效，请核对应用凭据和公网 HTTPS 地址",

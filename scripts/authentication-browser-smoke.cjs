@@ -33,6 +33,12 @@ async function unusedPort() {
   await new Promise((resolve) => listener.close(resolve));
   return port;
 }
+function launchDaemon(daemonArguments) {
+	const log = fs.openSync(path.join(state, 'daemon.log'), 'a', 0o600);
+	const child = spawn(binary, daemonArguments, { env: { ...process.env, XUNARA_PLATFORM_ADMIN_TOKEN: platformToken }, stdio: ['ignore', log, log] });
+	fs.closeSync(log);
+	return child;
+}
 function serve(request, response) {
   const pathname = new URL(request.url, origin).pathname;
   if (/^\/(api|health|console|setup|oidc|oauth2)(\/|$)/.test(pathname) || pathname.startsWith('/register/')) {
@@ -71,6 +77,15 @@ function backend(endpoint, options = {}) {
     request.on('error', reject); request.end(options.body);
   });
 }
+async function browserAPI(page, endpoint, options = {}) {
+  const result = await page.evaluate(async ({ endpoint, options }) => {
+    const response = await fetch(endpoint, { method: options.method || 'GET', credentials: 'same-origin',
+      headers: { ...options.headers, ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      body: options.body === undefined ? undefined : JSON.stringify(options.body) });
+    return { status: response.status, text: await response.text() };
+  }, { endpoint, options });
+  return { status: () => result.status, text: async () => result.text, json: async () => JSON.parse(result.text) };
+}
 async function assertPrivateInputNotStored(page) {
   const storage = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
   assert.equal(storage.includes(providerSecret), false);
@@ -107,12 +122,10 @@ async function main() {
   fs.writeFileSync(orgConfig, JSON.stringify({ organizations: [{ id: 'portal', name: '认证管理验收', domains: ['control.example.test'],
     server_url: origin, state_dir: path.join(state, 'portal'), registration: 'open', allow_local_login: true }],
     self_service: { site: 'portal', domain_suffix: 'example.test', scheme: 'https', port: String(proxy.address().port), cookie_domain: 'example.test', plan: 'free' } }), { mode: 0o600 });
-  const log = fs.openSync(path.join(state, 'daemon.log'), 'a', 0o600);
   // 全部凭据只在临时内存、环境或请求正文；不连接真实 IdP，也不使用线上数据库。
-  daemon = spawn(binary, ['-listen', `127.0.0.1:${controlPort}`, '-grpc-listen', '127.0.0.1:0', '-org-config', orgConfig,
-    '-platform-state-dir', state, '-plans', 'builtin', '-network-pool', '100.100.0.0/16', '-log-level', 'error'],
-    { env: { ...process.env, XUNARA_PLATFORM_ADMIN_TOKEN: platformToken }, stdio: ['ignore', log, log] });
-  fs.closeSync(log);
+  const daemonArguments = ['-listen', `127.0.0.1:${controlPort}`, '-grpc-listen', '127.0.0.1:0', '-org-config', orgConfig,
+    '-platform-state-dir', state, '-plans', 'builtin', '-network-pool', '100.100.0.0/16', '-log-level', 'error'];
+  daemon = launchDaemon(daemonArguments);
   let ready = false;
   for (let attempt = 0; attempt < 100; attempt++) {
     try { if ((await api('/health')).ok) { ready = true; break; } } catch {}
@@ -300,6 +313,113 @@ async function main() {
   await ownerPage.goto(origin + '/authentication');
   await ownerPage.getByText('已归档的提供方', { exact: false }).waitFor();
   await assertPrivateInputNotStored(adminPage);
+
+  mark('platform-account-status-cancellation-version-conflict-and-mobile');
+  await adminPage.goto(origin + '/admin/users');
+  const memberRow = () => adminPage.locator('tbody tr').filter({ hasText: 'invited-member' });
+  const ownerRow = adminPage.locator('tbody tr').filter({ hasText: 'authentication-owner' });
+  await ownerRow.waitFor();
+  assert.equal(await ownerRow.getByRole('button', { name: '禁用', exact: true }).isDisabled(), true);
+  const list = await api('/api/platform/v1/users').then((response) => response.json());
+  const member = list.users.find((user) => user.org === 'portal' && user.login === 'invited-member');
+  const owner = list.users.find((user) => user.org === 'portal' && user.login === 'authentication-owner');
+  assert.equal(typeof member.updatedAt, 'string');
+  const statusPath = `/api/platform/v1/organizations/portal/users/${member.id}/status`;
+  await memberRow().getByRole('button', { name: '禁用', exact: true }).click();
+  await adminPage.getByLabel('操作原因（必填）', { exact: true }).fill('核对注册资料');
+  await adminPage.getByRole('button', { name: '取消', exact: true }).click();
+  assert.equal((await api('/api/platform/v1/users').then((response) => response.json())).users.find((user) => user.org === 'portal' && user.id === member.id).disabled, false);
+  await memberRow().getByRole('button', { name: '禁用', exact: true }).click();
+  await adminPage.getByLabel('操作原因（必填）', { exact: true }).fill('核对注册资料');
+  for (const width of [320, 390, 768]) {
+    await adminPage.setViewportSize({ width, height: 844 });
+    assert.equal(await adminPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+    const box = await adminPage.getByRole('dialog').boundingBox();
+    assert.equal(box.x >= 0 && box.y >= 0 && box.x + box.width <= width + 1 && box.y + box.height <= 845, true);
+  }
+  const account = await browserAPI(ownerPage, '/api/v1/account').then((response) => response.json());
+  const profile = await browserAPI(ownerPage, `/api/v1/users/${member.id}`, {
+    method: 'PATCH', headers: { 'X-CSRF-Token': account.csrf_token }, body: { displayName: '注册资料待复核', expectedUpdatedAt: member.updatedAt },
+  });
+  assert.equal(profile.status(), 200);
+  const conflicted = adminPage.waitForResponse((response) => response.url().endsWith('/status') && response.request().method() === 'PATCH');
+  await adminPage.getByRole('button', { name: '确认禁用', exact: true }).click();
+  assert.equal((await conflicted).status(), 409);
+  await adminPage.getByRole('alert').filter({ hasText: '账号已被其他操作修改' }).waitFor();
+  assert.equal(await adminPage.getByLabel('操作原因（必填）', { exact: true }).inputValue(), '核对注册资料');
+  assert.equal(await adminPage.getByRole('button', { name: '确认禁用', exact: true }).isDisabled(), true);
+  await adminPage.getByRole('button', { name: '刷新核对账号', exact: true }).click();
+  await adminPage.getByText('已刷新实际状态，请核对后再次确认操作', { exact: true }).waitFor();
+  const disabledResponse = adminPage.waitForResponse((response) => response.url().endsWith('/status') && response.request().method() === 'PATCH');
+  await adminPage.getByRole('button', { name: '确认禁用', exact: true }).click();
+  const disabled = await disabledResponse;
+  assert.equal(disabled.status(), 200); assert.equal((await disabled.json()).revoked, 1);
+  await adminPage.getByRole('dialog').waitFor({ state: 'detached' });
+  await memberRow().getByText('已禁用', { exact: true }).waitFor();
+  await adminPage.getByLabel('账号状态筛选', { exact: true }).selectOption('disabled');
+  assert.equal(await adminPage.locator('tbody tr').count(), 1);
+  await adminPage.getByLabel('账号状态筛选', { exact: true }).selectOption('all');
+
+  mark('disabled-account-cookie-password-and-last-active-owner-boundaries');
+  await ownerPage.goto(origin + '/members');
+  await ownerPage.locator('tbody tr').filter({ hasText: 'invited-member' }).getByText('已禁用', { exact: true }).waitFor();
+  assert.equal((await ownerPage.locator('tbody tr').filter({ hasText: 'invited-member' }).innerText()).includes('核对注册资料'), false);
+  assert.equal((await browserAPI(invitedPage, '/api/v1/account')).status(), 401);
+  const rejected = await browserAPI(invitedPage, '/api/v1/auth/login', { method: 'POST', body: { login: 'invited-member', password } });
+  assert.equal(rejected.status(), 401); assert.equal((await rejected.text()).includes('disabled'), false);
+  assert.equal((await browserAPI(ownerPage, '/api/v1/account')).status(), 200);
+  assert.equal((await browserAPI(newPage, '/api/v1/account')).status(), 200);
+  assert.equal((await browserAPI(ownerPage, statusPath, { method: 'PATCH', body: { disabled: false, reason: '不允许的租户调用', expected_updated_at: member.updatedAt } })).status(), 401);
+  const lastOwner = await api(`/api/platform/v1/organizations/portal/users/${owner.id}/status`, { disabled: true, reason: '检查最后所有者保护', expected_updated_at: owner.updatedAt }, 'PATCH');
+  assert.equal(lastOwner.status, 409); assert.equal((await lastOwner.text()).includes('LAST_ACTIVE_OWNER'), true);
+
+  mark('account-status-required-audit-failure-rolls-back-and-keeps-the-draft');
+  const database = new DatabaseSync(path.join(state, 'portal/state.db'));
+  let disabledFact;
+  try {
+    disabledFact = database.prepare('SELECT CAST(updated_at AS TEXT) AS revision, disabled_reason, CAST(disabled_at AS TEXT) AS disabled_at FROM users WHERE id = ?').get(member.id);
+    database.exec("CREATE TRIGGER status_audit_failure BEFORE INSERT ON audit_events WHEN NEW.action = 'user.enabled' BEGIN SELECT RAISE(ABORT, 'isolated status audit unavailable'); END");
+  } finally { database.close(); }
+  await memberRow().getByRole('button', { name: '解禁', exact: true }).click();
+  await adminPage.getByLabel('操作原因（必填）', { exact: true }).fill('复核通过');
+  const failed = adminPage.waitForResponse((response) => response.url().endsWith('/status') && response.request().method() === 'PATCH');
+  await adminPage.getByRole('button', { name: '确认解禁', exact: true }).click();
+  assert.equal((await failed).status(), 503);
+  await adminPage.getByRole('alert').filter({ hasText: '提交结果需刷新核对' }).waitFor();
+  assert.equal(await adminPage.getByLabel('操作原因（必填）', { exact: true }).inputValue(), '复核通过');
+  assert.equal(await adminPage.getByRole('button', { name: '确认解禁', exact: true }).isDisabled(), true);
+  const checked = new DatabaseSync(path.join(state, 'portal/state.db'));
+  try {
+    assert.deepEqual(checked.prepare('SELECT CAST(updated_at AS TEXT) AS revision, disabled_reason, CAST(disabled_at AS TEXT) AS disabled_at FROM users WHERE id = ?').get(member.id), disabledFact);
+    checked.exec('DROP TRIGGER status_audit_failure');
+  } finally { checked.close(); }
+
+  mark('account-suspension-survives-a-real-daemon-restart');
+  const exited = new Promise((resolve) => daemon.once('exit', resolve));
+  daemon.kill('SIGTERM'); await exited;
+  daemon = launchDaemon(daemonArguments);
+  ready = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { if ((await api('/health')).ok) { ready = true; break; } } catch {}
+    if (daemon.exitCode !== null) throw new Error('restarted daemon exited');
+    await sleep(100);
+  }
+  assert.equal(ready, true);
+  assert.equal((await browserAPI(invitedPage, '/api/v1/account')).status(), 401);
+  await adminPage.getByRole('button', { name: '刷新核对账号', exact: true }).click();
+  await adminPage.getByText('已刷新实际状态，请核对后再次确认操作', { exact: true }).waitFor();
+  const enabled = adminPage.waitForResponse((response) => response.url().endsWith('/status') && response.request().method() === 'PATCH');
+  await adminPage.getByRole('button', { name: '确认解禁', exact: true }).click();
+  assert.equal((await enabled).status(), 200);
+  await adminPage.getByRole('dialog').waitFor({ state: 'detached' });
+  await memberRow().getByText('已启用', { exact: true }).waitFor();
+  assert.equal((await browserAPI(invitedPage, '/api/v1/account')).status(), 401);
+  await invitedPage.goto(origin + '/login');
+  await invitedPage.getByLabel('登录名', { exact: true }).fill('invited-member');
+  await invitedPage.getByLabel('密码', { exact: true }).fill(password);
+  await invitedPage.getByRole('button', { name: '登录', exact: true }).click();
+  await invitedPage.waitForURL('**/dashboard');
+  assert.equal((await browserAPI(invitedPage, '/api/v1/account')).status(), 200);
   assert.deepEqual(errors, []);
   mark('authentication-management-real-https-complete');
   console.log(JSON.stringify({ result: 'passed', stages: completed.length, pageErrors: 0, publicProvidersContacted: false }));

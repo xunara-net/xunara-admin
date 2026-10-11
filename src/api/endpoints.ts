@@ -3,6 +3,7 @@
 import { platformApi } from "./client";
 import { toOrganization, toPlan } from "./adapters";
 import type { AuditEvent, Organization, OrganizationPayload, Plan, PlatformRelay, PlatformUser, RelayConfigUpdate, RelayConfigurationHistory, RelayEnrollment, RelayVisibility } from "./types";
+import { parsePlatformUsers } from "./user-status";
 import { relayExecutionContract } from "../utils/relay-execution";
 
 export const listOrganizations = async (): Promise<Organization[]> => {
@@ -53,7 +54,7 @@ export const deletePlan = (id: string) =>
   platformApi<void>(`/api/platform/v1/plans/${encodeURIComponent(id)}`, { method: "DELETE" });
 
 export const listUsers = async (): Promise<PlatformUser[]> =>
-  (await platformApi<{ users: PlatformUser[] }>("/api/platform/v1/users")).users ?? [];
+  parsePlatformUsers(await platformApi<unknown>("/api/platform/v1/users"));
 
 export const revokeUserSessions = (org: string, userID: number) =>
   platformApi<{ revoked: number }>(

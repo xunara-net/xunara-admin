@@ -9,6 +9,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const { DatabaseSync } = require('node:sqlite');
+const { runLoginHistorySmoke } = require('../../xunara-web/scripts/login-history-browser-smoke.cjs');
 
 const binary = process.env.SMOKE_XUNARAD;
 const webDist = path.resolve(__dirname, '../../xunara-web/dist');
@@ -589,6 +590,18 @@ async function main() {
       assert.equal(page.url().includes(secret), false);
     }
   }
+  await runLoginHistorySmoke({ page: ownerPage, origin, databaseFile: path.join(state, 'portal/state.db'), mark, restart: async () => {
+    const stopped = new Promise((resolve) => daemon.once('exit', resolve));
+    daemon.kill('SIGTERM'); await stopped;
+    daemon = launchDaemon(daemonArguments);
+    let ready = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { if ((await api('/health')).ok) { ready = true; break; } } catch {}
+      if (daemon.exitCode !== null) throw new Error('history daemon restart failed');
+      await sleep(100);
+    }
+    assert.equal(ready, true);
+  } });
   const daemonLog = fs.readFileSync(path.join(state, 'daemon.log'), 'utf8');
   assert.equal(daemonLog.includes(firstCode) || daemonLog.includes(secondCode) || daemonLog.includes(replacementPassword), false);
   assert.deepEqual(errors, []);
@@ -597,7 +610,7 @@ async function main() {
 }
 main().catch((error) => {
   console.error(JSON.stringify({ result: 'failed', stage, errorType: error.name,
-    locations: error.stack?.split('\n').filter((line) => line.includes(__filename)) }));
+    locations: error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('login-history-browser-smoke.cjs')) }));
   process.exitCode = 1;
 }).finally(async () => {
   if (browser) await browser.close();

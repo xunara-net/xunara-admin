@@ -11,6 +11,7 @@ const { runNetworkSmoke } = require('../../xunara-web/scripts/network-browser-sm
 const { runRelayHistorySmoke } = require('../../xunara-web/scripts/relay-history-browser-smoke.cjs');
 const { runAddressRelaySmoke } = require('../../xunara-web/scripts/address-relay-browser-smoke.cjs');
 const { runMemberSmoke } = require('../../xunara-web/scripts/member-browser-smoke.cjs');
+const { runLoginHistorySmoke } = require('../../xunara-web/scripts/login-history-browser-smoke.cjs');
 const { createOAuth2Fixture, runOAuth2Smoke } = require('./oauth2-browser-smoke.cjs');
 
 const adminDist = path.resolve(__dirname, '../dist');
@@ -754,13 +755,14 @@ async function main() {
   const currentAllocation = await userContext.request.get(origin + '/api/v2/network/addresses').then((response) => response.json());
   assert.equal(currentAllocation.ipv4_cidr, '192.168.55.0/24'); assert.equal(currentAllocation.pending, false);
   await runMemberSmoke({ page: userPage, ownerContext: userContext, memberContext: invitedContext, origin, mark });
+  await runLoginHistorySmoke({ page: userPage, origin, databaseFile: path.join(state, 'state.db'), mark });
   assert.equal(pageErrors.length, 0);
   console.log(JSON.stringify({ passed: true, stages: completed, javascript_errors: pageErrors.length, fixture: 'isolated ephemeral tenant' }));
 }
 
 // 失败输出只有阶段与错误类型，不能把断言中的请求正文或凭据顺带打印。
 main().catch((error) => {
-  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('network-browser-smoke.cjs') || line.includes('relay-history-browser-smoke.cjs') || line.includes('address-relay-browser-smoke.cjs') || line.includes('member-browser-smoke.cjs') || line.includes('oauth2-browser-smoke.cjs'));
+  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('network-browser-smoke.cjs') || line.includes('relay-history-browser-smoke.cjs') || line.includes('address-relay-browser-smoke.cjs') || line.includes('member-browser-smoke.cjs') || line.includes('oauth2-browser-smoke.cjs') || line.includes('login-history-browser-smoke.cjs'));
   console.error(JSON.stringify({ failed_stage: stage, error_type: error.name, locations }));
   process.exitCode = 1;
 }).finally(async () => {

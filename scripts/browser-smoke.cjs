@@ -12,6 +12,7 @@ const { runRelayHistorySmoke } = require('../../xunara-web/scripts/relay-history
 const { runAddressRelaySmoke } = require('../../xunara-web/scripts/address-relay-browser-smoke.cjs');
 const { runDeviceCoreSmoke } = require('../../xunara-web/scripts/device-core-browser-smoke.cjs');
 const { runRouteCoreSmoke } = require('../../xunara-web/scripts/route-core-browser-smoke.cjs');
+const { runDeviceEnrollmentSmoke } = require('../../xunara-web/scripts/device-enrollment-browser-smoke.cjs');
 const { runMemberSmoke } = require('../../xunara-web/scripts/member-browser-smoke.cjs');
 const { runLoginHistorySmoke } = require('../../xunara-web/scripts/login-history-browser-smoke.cjs');
 const { runAccountExportSmoke } = require('../../xunara-web/scripts/account-export-browser-smoke.cjs');
@@ -738,6 +739,7 @@ async function main() {
   } });
   await runDeviceCoreSmoke({ page: userPage, memberPage: invitedPage, origin, state, mark });
   await runRouteCoreSmoke({ page: userPage, memberPage: invitedPage, origin, state, mark });
+  await runDeviceEnrollmentSmoke({ page: userPage, memberPage: invitedPage, origin, state, mark });
 
   mark('platform-custom-private-cidr-uses-same-safety-path-on-mobile');
   await adminPage.goto(origin + '/admin/tenants');
@@ -768,7 +770,7 @@ async function main() {
 
 // 失败输出只有阶段与错误类型，不能把断言中的请求正文或凭据顺带打印。
 main().catch((error) => {
-  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('network-browser-smoke.cjs') || line.includes('relay-history-browser-smoke.cjs') || line.includes('address-relay-browser-smoke.cjs') || line.includes('device-core-browser-smoke.cjs') || line.includes('member-browser-smoke.cjs') || line.includes('oauth2-browser-smoke.cjs') || line.includes('login-history-browser-smoke.cjs') || line.includes('account-export-browser-smoke.cjs'));
+  const locations = error.stack?.split('\n').filter((line) => line.includes(__filename) || line.includes('network-browser-smoke.cjs') || line.includes('relay-history-browser-smoke.cjs') || line.includes('address-relay-browser-smoke.cjs') || line.includes('device-core-browser-smoke.cjs') || line.includes('route-core-browser-smoke.cjs') || line.includes('device-enrollment-browser-smoke.cjs') || line.includes('member-browser-smoke.cjs') || line.includes('oauth2-browser-smoke.cjs') || line.includes('login-history-browser-smoke.cjs') || line.includes('account-export-browser-smoke.cjs'));
   console.error(JSON.stringify({ failed_stage: stage, error_type: error.name, locations }));
   process.exitCode = 1;
 }).finally(async () => {

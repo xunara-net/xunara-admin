@@ -11,6 +11,7 @@ const { runNetworkSmoke } = require('../../xunara-web/scripts/network-browser-sm
 const { runRelayHistorySmoke } = require('../../xunara-web/scripts/relay-history-browser-smoke.cjs');
 const { runAddressRelaySmoke } = require('../../xunara-web/scripts/address-relay-browser-smoke.cjs');
 const { runDeviceCoreSmoke } = require('../../xunara-web/scripts/device-core-browser-smoke.cjs');
+const { runRouteCoreSmoke } = require('../../xunara-web/scripts/route-core-browser-smoke.cjs');
 const { runMemberSmoke } = require('../../xunara-web/scripts/member-browser-smoke.cjs');
 const { runLoginHistorySmoke } = require('../../xunara-web/scripts/login-history-browser-smoke.cjs');
 const { runAccountExportSmoke } = require('../../xunara-web/scripts/account-export-browser-smoke.cjs');
@@ -427,7 +428,7 @@ async function main() {
   await userPage.getByText('已接入 1 / 1', { exact: true }).waitFor();
 
   mark('network-read-failures-are-not-zero-resources');
-  const networkPaths = ['/api/v1/routes', '/api/v2/relays/enrolled', '/api/v2/derp', '/api/v2/exit-nodes'];
+  const networkPaths = ['/api/v2/routes/configuration', '/api/v2/relays/enrolled', '/api/v2/derp', '/api/v2/exit-nodes'];
   for (const endpoint of networkPaths) {
     await userPage.route('**' + endpoint, (route) => route.fulfill({ status: 503, contentType: 'application/json',
       body: JSON.stringify({ error: '网络读取失败（验收注入）' }) }));
@@ -736,6 +737,7 @@ async function main() {
     assert.equal(response.status, 200);
   } });
   await runDeviceCoreSmoke({ page: userPage, memberPage: invitedPage, origin, state, mark });
+  await runRouteCoreSmoke({ page: userPage, memberPage: invitedPage, origin, state, mark });
 
   mark('platform-custom-private-cidr-uses-same-safety-path-on-mobile');
   await adminPage.goto(origin + '/admin/tenants');

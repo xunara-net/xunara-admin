@@ -115,10 +115,20 @@ async function main() {
   await cdp.send('WebAuthn.enable');
   const options = { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true };
   const firstAuthenticator = (await cdp.send('WebAuthn.addVirtualAuthenticator', { options })).authenticatorId;
+  // 旧租户同域、同数字 ID 的驻留凭据，不能被新的平台绑定覆盖。
+  const legacyKey = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const legacyId = crypto.randomBytes(32).toString('base64');
+  const legacyHandle = Buffer.from([0, 0, 0, 0, 0, 0, 0, 1]).toString('base64');
+  await cdp.send('WebAuthn.addCredential', { authenticatorId: firstAuthenticator, credential: {
+    credentialId: legacyId, isResidentCredential: true, rpId: 'admin.example.test',
+    privateKey: legacyKey.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'), userHandle: legacyHandle, signCount: 0,
+  } });
   await page.goto(origin + '/admin/security');
   await addKey(page, '手机密钥');
   const firstCredentials = (await cdp.send('WebAuthn.getCredentials', { authenticatorId: firstAuthenticator })).credentials;
-  assert.equal(firstCredentials.length, 1);
+  assert.equal(firstCredentials.length, 2);
+  assert(firstCredentials.some(credential => credential.credentialId === legacyId && credential.userHandle === legacyHandle));
+  assert(firstCredentials.some(credential => credential.userHandle !== legacyHandle));
   await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId: firstAuthenticator });
   await cdp.send('WebAuthn.addVirtualAuthenticator', { options });
   await addKey(page, '备用密钥');

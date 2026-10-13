@@ -123,7 +123,9 @@ async function main() {
     credentialId: legacyId, isResidentCredential: true, rpId: 'admin.example.test',
     privateKey: legacyKey.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'), userHandle: legacyHandle, signCount: 0,
   } });
-  await page.goto(origin + '/admin/security');
+  await page.getByRole('button', { name: '管 平台管理员', exact: true }).click();
+  await page.getByRole('button', { name: '管理员安全', exact: true }).click();
+  await page.waitForURL('**/admin/security');
   await addKey(page, '手机密钥');
   const firstCredentials = (await cdp.send('WebAuthn.getCredentials', { authenticatorId: firstAuthenticator })).credentials;
   assert.equal(firstCredentials.length, 2);

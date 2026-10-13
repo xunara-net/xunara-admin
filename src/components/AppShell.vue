@@ -72,6 +72,7 @@ async function signOut() {
             <span>平台管理员</span>
           </button>
           <div v-if="menuOpen" class="menu" @mouseleave="menuOpen = false">
+            <button @click="menuOpen = false; router.push({ name: 'administrator-security' })">管理员安全</button>
             <button style="color: var(--danger)" @click="signOut">退出后台</button>
           </div>
         </div>

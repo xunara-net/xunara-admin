@@ -1,9 +1,7 @@
 // Platform admin state.
 //
-// The operator signs in with the deployment's platform admin token. The SPA
-// keeps it in sessionStorage — per tab, gone when the tab closes — and sends
-// it as a bearer token, so there is no admin cookie and therefore no CSRF
-// surface. Nothing else about the token is persisted or logged.
+// 管理员登录后只保存短期 Bearer 会话；永久恢复令牌不留在浏览器存储。
+// 旧部署禁用平台身份时仍保留显式令牌模式，服务端凭据管理不接受这种模式。
 
 import { reactive, readonly } from "vue";
 

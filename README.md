@@ -1,11 +1,11 @@
 # Xunara Admin（玄序 · 平台超级管理员后台）
 
 平台运营者的后台：租户与网段、套餐目录、全平台用户、跨租户审计、托管中继管理
-与系统信息。与用户控制台**完全分离**——独立前端、独立凭据（平台管理令牌）、
+与系统信息。与用户控制台**完全分离**——独立前端、独立管理员身份（恢复令牌/Passkey）、
 独立 API 面（`/api/platform/v1`）。
 
 ```text
-xunara-admin ──Bearer：平台管理令牌──▶ /api/platform/v1 ──▶ xunara-server
+xunara-admin ──Bearer：短期管理员会话──▶ /api/platform/v1 ──▶ xunara-server
 ```
 
 ## 技术栈
@@ -14,9 +14,10 @@ Vue 3 + TypeScript + Vite + vue-router + Vitest（无 UI 框架依赖）。
 
 ## 安全模型
 
-- 平台令牌由运营者在登录页输入，只保存在 **sessionStorage**（关闭标签页即失效），
-  以 `Authorization: Bearer` 发送；
-- 不使用 Cookie，因此没有 CSRF 面；令牌不写入 URL、不写入日志；
+- 恢复令牌或 Passkey 登录换取四小时平台会话，只保存短期凭据到 **sessionStorage**，
+  以 `Authorization: Bearer` 发送；禁用平台身份的旧部署保留明确令牌模式；
+- 人类会话不使用 Cookie；WebAuthn 使用隔离的 HttpOnly 挑战 Cookie、固定 origin 和 UV，
+  注册绑定发起会话。凭据操作要求最近十五分钟内登录，不接受原始平台令牌代替人类会话；
 - 401 清空失效的平台令牌；403 展示权限或配额拒绝，不误清仍有效的身份；
 - 平台面与租户面互不信任：租户会话在平台 API 上无效，平台令牌也进不了租户控制台。
 
@@ -34,7 +35,8 @@ npm run build      # 产物在 dist/（base=/admin/），由 xunara-deploy 的 n
 
 | 路由 | 页面 |
 | --- | --- |
-| `/login` | 平台令牌登录 |
+| `/login` | 平台恢复令牌或管理员 Passkey 登录 |
+| `/security` | 独立管理员通行密钥列表、多把绑定/解绑、最后登录方式保护 |
 | `/dashboard` | 平台总览：租户、用户、设备、套餐分布、最近事件 |
 | `/tenants` | 租户与网络：改套餐、重新分配网段、删除托管租户 |
 | `/authentication` | 按租户管理成员注册、OAuth2/OIDC 应用、密钥轮换与归档；开户入口额外管理公开开户开关 |
@@ -44,7 +46,7 @@ npm run build      # 产物在 dist/（base=/admin/），由 xunara-deploy 的 n
 来源明确，身份域不可修改；停用最后登录方式、过期配置覆盖由后端拒绝。
 详见[服务端登录设置手册](https://github.com/xunara-net/xunara-server/blob/main/docs/authentication-settings.md)。
 | `/plans` | 套餐编辑器：配额与能力开关（保存即生效，无需重启） |
-| `/users` | 全平台用户：搜索 / 状态筛选、版本保护的禁用 / 解禁、核实持有人后一次性密码重置码、强制下线、删除；保护最后启用 owner |
+| `/users` | 全平台用户：添加到指定已有网络、搜索 / 状态筛选、版本保护的禁用 / 解禁、一次性密码重置码、强制下线、删除；保护最后启用 owner |
 | `/audit` | 跨租户审计（按租户与条数筛选） |
 | `/relays` | 托管中继列表/筛选、一次性注册令牌、版本保护的期望配置/历史恢复与删除 |
 | `/system` | 系统信息与安全说明 |
@@ -129,6 +131,20 @@ IP 冲突保留草稿及成员只读；不使用生产凭据做写入测试。
 审批、双客户端 DERP 转发、生产 HTTPS 或全平台兼容。
 
 ## 部署
+
+管理员认证需要可信 HTTPS 域名。首次使用平台恢复令牌登录，到“管理员安全”绑定
+手机、电脑或安全密钥。解绑撤销全部管理员 Passkey 会话；恢复令牌仍可登录。
+目前只有一个部署运营者身份，不代表多管理员 RBAC 或 TOTP 已完成。
+添加用户按所选网络成员额度校验，不开户、不代登录，密码只用于本次提交并在关闭后清理。
+配置、独立身份文件备份与 API 以
+[服务端手册](https://github.com/xunara-net/xunara-server/blob/main/docs/platform-administrator.md) 为准。
+
+先升级服务端，再升级后台前端；新版后台需要认证状态接口，故障时不盲目降级。
+
+新增浏览器回归 `scripts/platform-account-browser-smoke.cjs` 使用独立临时数据库、
+隔离 HTTPS 和 Chromium 虚拟认证器，不使用生产凭据。执行目录为本仓库，前置条件
+与“测试”中的浏览器回归一致，设置 `SMOKE_XUNARAD`、`PLAYWRIGHT_MODULE`、
+`CHROMIUM_BINARY` 后执行 `node scripts/platform-account-browser-smoke.cjs`。
 
 `xunara-deploy` 的 nginx 把 `/admin/` 映射到本仓库的 `dist/`，并保证
 `/api/platform/v1` 同源反代到 `xunara-server`。

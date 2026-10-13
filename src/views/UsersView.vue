@@ -9,11 +9,13 @@ import { admin } from "../store";
 import PageHeader from "../components/PageHeader.vue";
 import DataTable from "../components/DataTable.vue";
 import ModalDialog from "../components/ModalDialog.vue";
+import CreateUserDialog from "../components/CreateUserDialog.vue";
 import { formatTime, relativeTime, roleLabel } from "../utils/format";
 
 const loading = ref(true);
 const error = ref("");
 const users = ref<PlatformUser[]>([]);
+const createOpen = ref(false);
 const search = ref("");
 const statusFilter = ref("all");
 const busy = ref(false);
@@ -201,6 +203,7 @@ async function copyResetCode() {
 <template>
   <PageHeader title="用户管理" desc="全平台账号，按租户分组。">
     <template #actions>
+      <button class="btn primary" :disabled="busy || loading || !!error" @click="createOpen = true">添加用户</button>
       <input v-model="search" class="input user-search" placeholder="搜索用户 / 租户" />
       <select v-model="statusFilter" class="input" aria-label="账号状态筛选"><option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已禁用</option></select>
       <button class="btn" :disabled="busy || loading" @click="load">刷新</button>
@@ -315,6 +318,7 @@ async function copyResetCode() {
       </template>
     </template>
   </ModalDialog>
+  <CreateUserDialog :open="createOpen" @close="createOpen = false" @created="admin.toast('success', '用户已创建'); load()" />
 </template>
 
 <style scoped>

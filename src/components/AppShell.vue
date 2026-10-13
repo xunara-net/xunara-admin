@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { admin } from "../store";
+import { logout } from "../api/platform-auth";
 
 const nav = [
   { to: "/dashboard", label: "平台总览", icon: "📊" },
@@ -12,6 +13,7 @@ const nav = [
   { to: "/relays", label: "中继管理", icon: "📡" },
   { to: "/audit", label: "平台审计", icon: "📜" },
   { to: "/system", label: "系统信息", icon: "⚙️" },
+  { to: "/security", label: "管理员安全", icon: "🛡️" },
 ];
 
 const route = useRoute();
@@ -27,11 +29,14 @@ const titles: Record<string, string> = {
   relays: "中继管理",
   audit: "平台审计",
   system: "系统信息",
+  "administrator-security": "管理员安全",
   "not-found": "页面不存在",
 };
 const title = computed(() => (route.meta.title as string) ?? titles[String(route.name)] ?? "平台后台");
 
-function signOut() {
+async function signOut() {
+  try { await logout(); }
+  catch { admin.toast("info", "本地已退出；未确认服务端撤销，请勿在不可信设备保留凭据"); }
   admin.signOut();
   router.push({ name: "login" });
 }
@@ -54,7 +59,7 @@ function signOut() {
         </div>
       </nav>
       <div style="padding: 14px 18px; border-top: 1px solid var(--border); color: var(--text-faint); font-size: 12px">
-        平台令牌会话 · 关闭标签页即退出
+        独立平台身份 · 退出后台撤销会话
       </div>
     </aside>
 

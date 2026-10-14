@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import * as ep from "../api/endpoints";
 import { ApiError, errorMessage } from "../api/client";
 import { setUserStatus } from "../api/user-status";
-import { canResetPassword, issuePasswordReset, type PasswordResetIssuance } from "../api/password-reset";
+import { canResetPassword, resetRandomPassword, type RandomPasswordReset } from "../api/password-reset";
 import type { PlatformUser } from "../api/types";
 import { admin } from "../store";
 import PageHeader from "../components/PageHeader.vue";
@@ -27,7 +27,7 @@ const needsRefresh = ref(false);
 const resetSelected = ref<PlatformUser | null>(null);
 const resetReason = ref("");
 const ownershipVerified = ref(false);
-const resetIssued = ref<PasswordResetIssuance | null>(null);
+const resetIssued = ref<RandomPasswordReset | null>(null);
 const resetError = ref("");
 const resetNeedsRefresh = ref(false);
 let disposed = false;
@@ -170,17 +170,17 @@ async function refreshReset() {
   if (!latest) { resetError.value = "账号已不在列表中，请关闭弹窗核对"; return; }
   resetSelected.value = { ...latest };
   resetNeedsRefresh.value = false;
-  // 刷新不会取回已显示一次的码，也不会自动重新生成；必须重新确认核实和写入。
+  // 刷新不取回明文或自动重置；再次操作必须核实并确认立即改密的影响。
   ownershipVerified.value = false;
-  resetError.value = "已刷新真实状态，请重新核实持有人并确认；再次生成会使此前的码失效";
+  resetError.value = "已刷新真实状态，请重新核实持有人并确认；再次重置会使此前的临时密码失效";
 }
 
-async function generateReset() {
+async function performReset() {
   if (busy.value || loading.value || error.value || resetIssued.value || resetNeedsRefresh.value || !resetSelected.value || !canResetPassword(resetSelected.value)) return;
   busy.value = true;
   resetError.value = "";
   try {
-    const issued = await issuePasswordReset(resetSelected.value, resetReason.value, ownershipVerified.value);
+    const issued = await resetRandomPassword(resetSelected.value, resetReason.value, ownershipVerified.value);
     if (disposed) return;
     resetIssued.value = issued;
     await load();
@@ -191,12 +191,12 @@ async function generateReset() {
   } finally { busy.value = false; }
 }
 
-async function copyResetCode() {
+async function copyTemporaryPassword() {
   if (!resetIssued.value) return;
   try {
-    await navigator.clipboard.writeText(resetIssued.value.code);
+    await navigator.clipboard.writeText(resetIssued.value.temporaryPassword);
     admin.toast("success", "已复制，请通过已核实的独立渠道交付并清理剪贴板");
-  } catch { resetError.value = "浏览器未允许复制，请在文本框中手动复制；不要把码加入网址"; }
+  } catch { resetError.value = "浏览器未允许复制，请在文本框中手动复制；不要把密码加入网址"; }
 }
 </script>
 
@@ -250,7 +250,7 @@ async function copyResetCode() {
       <template #cell-login="{ row }">
         <div>{{ row.displayName || row.login }}</div>
         <div class="mono" style="color: var(--text-faint); font-size: 12px">{{ row.login }}<template v-if="row.email"> · {{ row.email }}</template></div>
-        <div v-if="row.passwordResetExpiresAt" class="status-detail">待用重置码 · {{ formatTime(row.passwordResetExpiresAt) }} 到期</div>
+        <div v-if="row.passwordChangeRequired" class="status-detail">临时密码 · 待本人修改</div>
       </template>
       <template #cell-org="{ row }">{{ row.orgName || row.org }}</template>
       <template #cell-role="{ row }"><span class="badge" :class="row.role === 'owner' ? 'primary' : ''">{{ roleLabel(row.role) }}</span></template>
@@ -289,32 +289,32 @@ async function copyResetCode() {
     </template>
   </ModalDialog>
 
-  <ModalDialog :open="!!resetSelected" :title="resetIssued ? '重置码已生成' : '生成密码重置码'" @close="closeReset">
+  <ModalDialog :open="!!resetSelected" :title="resetIssued ? '密码已重置' : '重置为随机临时密码'" @close="closeReset">
     <div v-if="resetSelected" class="status-form">
       <div><strong>{{ resetSelected.displayName || resetSelected.login }}</strong><div class="status-detail">{{ resetSelected.orgName || resetSelected.org }} · {{ resetSelected.login }}</div></div>
       <template v-if="resetIssued">
-        <div class="alert info">原码仅显示这一次，关闭后不能再次查看。请在本账号所属网络的 /reset-password 页面手动输入，不要加入网址。</div>
-        <label for="password-reset-code">一次性密码重置码</label>
-        <textarea id="password-reset-code" class="input mono reset-code" :value="resetIssued.code" readonly autocomplete="off" spellcheck="false" />
-        <div>有效期至 {{ formatTime(resetIssued.expiresAt) }}（15 分钟）。</div>
-        <p>生成未修改密码或退出登录。只有用户提交有效码和新密码后，旧密码及本账户原有浏览器登录才会失效；设备、中继及其他登录绑定不变。</p>
+        <div class="alert info">新密码仅显示这一次，关闭后不能再次查看。请通过已核实的独立渠道交付，告知用户在所属网络的正常登录页使用。</div>
+        <label for="temporary-password">随机临时密码</label>
+        <textarea id="temporary-password" class="input mono temporary-password" :value="resetIssued.temporaryPassword" readonly autocomplete="off" spellcheck="false" />
+        <div>已立即替换旧密码，退出 {{ resetIssued.sessionsRevoked }} 个控制台登录。</div>
+        <p>用户首次登录必须设置自己的新密码，完成后才能使用控制台。设备、中继及其他登录绑定不变。</p>
       </template>
       <template v-else>
-        <p>请先通过可靠渠道核实账号持有人，不能仅凭未经验证的联系邮箱判断身份。管理员不会看到旧密码，也不替用户设置新密码。</p>
-        <div class="alert">生成不修改密码、不退出登录。有效码兑换后撤销本账户全部浏览器登录，但不会断开组网设备、撤销 API Key 或移除第三方 / 通行密钥绑定。</div>
-        <div v-if="resetSelected.passwordResetExpiresAt" class="alert info">当前已有待用码，{{ formatTime(resetSelected.passwordResetExpiresAt) }} 到期。再次生成将使原码失效。</div>
+        <p>请先通过可靠渠道核实账号持有人，不能仅凭未经验证的联系邮箱判断身份。管理员不能查看旧密码；临时密码由系统随机生成。</p>
+        <div class="alert">确认后立即替换密码、退出该账号所有控制台登录，并要求本人首次改密。不会断开组网设备、撤销 API Key 或移除第三方 / 通行密钥绑定。</div>
+        <div v-if="resetSelected.passwordChangeRequired" class="alert info">账号已有临时密码。再次重置会使此前的临时密码失效。</div>
         <label for="password-reset-reason">重置原因（必填）</label>
-        <input id="password-reset-reason" v-model="resetReason" class="input" maxlength="256" :disabled="busy" placeholder="不要输入密码、重置码或证件资料" />
+        <input id="password-reset-reason" v-model="resetReason" class="input" maxlength="256" :disabled="busy" placeholder="不要输入密码、令牌或证件资料" />
         <label class="reset-confirmation"><input v-model="ownershipVerified" type="checkbox" :disabled="busy" />我已通过可靠渠道核实账号持有人</label>
       </template>
       <div v-if="resetError" class="alert error" role="alert">{{ resetError }}</div>
     </div>
     <template #footer>
-      <button class="btn" :disabled="busy || loading" @click="closeReset">{{ resetIssued ? '关闭并清除本页重置码' : '取消' }}</button>
-      <button v-if="resetIssued" class="btn primary" @click="copyResetCode">复制重置码</button>
+      <button class="btn" :disabled="busy || loading" @click="closeReset">{{ resetIssued ? '关闭并清除本页密码' : '取消' }}</button>
+      <button v-if="resetIssued" class="btn primary" @click="copyTemporaryPassword">复制临时密码</button>
       <template v-else>
         <button v-if="resetNeedsRefresh" class="btn" :disabled="busy || loading" @click="refreshReset">刷新核对账号</button>
-        <button class="btn primary" :disabled="busy || loading || !!error || resetNeedsRefresh || !ownershipVerified || !resetReason.trim() || !resetSelected || !canResetPassword(resetSelected)" @click="generateReset">{{ busy ? '生成中…' : '确认生成重置码' }}</button>
+        <button class="btn primary" :disabled="busy || loading || !!error || resetNeedsRefresh || !ownershipVerified || !resetReason.trim() || !resetSelected || !canResetPassword(resetSelected)" @click="performReset">{{ busy ? '重置中…' : '确认重置密码' }}</button>
       </template>
     </template>
   </ModalDialog>
@@ -328,5 +328,5 @@ async function copyResetCode() {
 .status-form p { margin: 0; }
 .reset-confirmation { display: flex; align-items: flex-start; gap: 8px; line-height: 1.6; }
 .reset-confirmation input { margin-top: 4px; flex-shrink: 0; }
-.reset-code { min-height: 74px; width: 100%; resize: vertical; overflow-wrap: anywhere; }
+.temporary-password { min-height: 58px; width: 100%; resize: vertical; overflow-wrap: anywhere; }
 </style>

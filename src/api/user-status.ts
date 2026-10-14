@@ -27,7 +27,8 @@ export function parsePlatformUsers(payload: unknown): PlatformUser[] {
       (user.disabledAt !== undefined && !isTimestamp(user.disabledAt)) ||
       (user.passwordResetAvailable !== undefined && typeof user.passwordResetAvailable !== "boolean") ||
       (user.passwordResetAvailable === true && user.disabled !== false) ||
-      (user.passwordResetExpiresAt !== undefined && (!isTimestamp(user.passwordResetExpiresAt) || user.passwordResetAvailable !== true)) ||
+      (user.passwordResetMode !== undefined && user.passwordResetMode !== "temporary_password") ||
+      (user.passwordChangeRequired !== undefined && typeof user.passwordChangeRequired !== "boolean") ||
       (user.disabled === true && (!user.disabledAt || !user.disabledReason)) ||
       (user.disabled === false && (user.disabledAt || user.disabledReason))) {
       throw new Error("用户状态响应格式不正确，请刷新核对");

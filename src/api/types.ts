@@ -78,7 +78,8 @@ export interface PlatformUser {
   disabledAt?: string;
   disabledReason?: string;
   passwordResetAvailable?: boolean;
-  passwordResetExpiresAt?: string;
+  passwordResetMode?: "temporary_password";
+  passwordChangeRequired?: boolean;
 }
 
 export interface AuditEvent {

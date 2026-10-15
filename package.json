@@ -9,7 +9,10 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:browser": "node scripts/browser-smoke.cjs",
+    "test:authentication": "node scripts/authentication-browser-smoke.cjs",
+    "test:platform-account": "node scripts/platform-account-browser-smoke.cjs"
   },
   "dependencies": {
     "vue": "^3.5.13",

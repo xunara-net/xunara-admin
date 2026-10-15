@@ -31,6 +31,8 @@ npm run test
 npm run build      # 产物在 dist/（base=/admin/），由 xunara-deploy 的 nginx 托管
 ```
 
+类型检查同时拒绝未使用的局部声明、导入和参数，避免调试残留继续进入构建。
+
 ## 页面
 
 | 路由 | 页面 |
@@ -67,8 +69,10 @@ npm run build      # 产物在 dist/（base=/admin/），由 xunara-deploy 的 n
 自动升级、灰度回滚、成本核算及实时地图尚未实现。
 
 租户网段弹窗支持保存自定义设备池与首次自动分配；自动分配不替换已有范围。
-自定义仅允许官方兼容 CGNAT 子集，服务器检查套餐、平台保留与历史冲突；不静默
-修改旧设备 IP。实际/期望收敛与回退边界以服务端 ADR-0022 为准。
+自定义支持合法私有 / 公网单播 IPv4 池（包括 /31、/32），服务器仍检查套餐、
+保留范围与历史冲突，不静默修改旧设备 IP。非标准设备 IP 不代表官方全平台兼容；
+实际/期望收敛、安全校验与回退以服务端
+[ADR-0023](https://github.com/xunara-net/xunara-server/blob/main/docs/adr/ADR-0023-flexible-ipv4-allocation.md)为准。
 
 套餐编辑只回写套餐数据，不发送读接口的派生展示字段；中继额度缺失或格式错误时
 拒绝编辑，避免把旧服务端未返回的额度覆盖为零。服务端与后台应按兼容顺序一并升级。
@@ -88,15 +92,20 @@ state 与事务重放、错误资料、最后登录方法和来源会话撤销�
 test_binary="$(mktemp -d)/xunarad"
 (cd ../xunara-server && go build -o "$test_binary" ./cmd/xunarad)
 SMOKE_XUNARAD="$test_binary" PLAYWRIGHT_MODULE=/absolute/path/to/playwright-core \
-  CHROMIUM_BINARY=/absolute/path/to/chromium node scripts/browser-smoke.cjs
+  CHROMIUM_BINARY=/absolute/path/to/chromium npm run test:browser
 SMOKE_XUNARAD="$test_binary" PLAYWRIGHT_MODULE=/absolute/path/to/playwright-core \
-  CHROMIUM_BINARY=/absolute/path/to/chromium node scripts/authentication-browser-smoke.cjs
+  CHROMIUM_BINARY=/absolute/path/to/chromium npm run test:authentication
+SMOKE_XUNARAD="$test_binary" PLAYWRIGHT_MODULE=/absolute/path/to/playwright-core \
+  CHROMIUM_BINARY=/absolute/path/to/chromium npm run test:platform-account
 ```
 
-第二个脚本额外需要 `openssl`；生成隔离的一日 HTTPS 证书，只信任本次证书公钥，
+后两个脚本额外需要 `openssl`；生成隔离的一日 HTTPS 证书，只信任本次证书公钥，
 不修改系统 CA。覆盖所有者配置邀请、真实受邀注册、公开独立开户、平台开关、
 提供方创建/密钥轮换/归档、租户隔离、版本冲突与 320 / 390 / 768px 弹窗。
 不连接公网 IdP；临时数据库、密钥和应用凭据在结束时清理。
+
+第三项验证独立管理员 Passkey、多把绑定 / 解绑、恢复登录与添加用户，不使用租户
+身份替代平台身份。浏览器脚本是显式验收入口，不是可以按“无应用导入”删除的组件。
 
 此脚本还验证随机密码恢复的核实确认、取消无写入、版本冲突 / 显式刷新、单次密码
 展示 / 复制 / 清除、重置与本人改密审计故障回滚、重启持久化及手机首次改密。

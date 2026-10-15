@@ -12,15 +12,6 @@ export const listOrganizations = async (): Promise<Organization[]> => {
   return answer.organizations.map(toOrganization);
 };
 
-export const getOrganization = async (id: string) =>
-  toOrganization(await platformApi<OrganizationPayload>(`/api/platform/v1/organizations/${encodeURIComponent(id)}`));
-
-export const updateOrganization = async (id: string, body: { name?: string }) =>
-  toOrganization(await platformApi<OrganizationPayload>(`/api/platform/v1/organizations/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    body,
-  }));
-
 export const deleteOrganization = (id: string) =>
   platformApi<void>(`/api/platform/v1/organizations/${encodeURIComponent(id)}`, { method: "DELETE" });
 

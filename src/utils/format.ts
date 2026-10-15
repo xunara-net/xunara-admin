@@ -30,12 +30,6 @@ export function quotaText(value: number | undefined): string {
   return value < 0 ? "不限" : String(value);
 }
 
-/** quotaPercent is the used/limit ratio, or null when unlimited. */
-export function quotaPercent(used: number, limit: number | undefined): number | null {
-  if (limit === undefined || limit === null || limit < 0 || limit === 0) return null;
-  return Math.min(100, Math.round((used / limit) * 100));
-}
-
 /** priceText renders the plan price, which the API reports in minor units. */
 export function priceText(cents: number, currency: string): string {
   if (!cents) return "免费";

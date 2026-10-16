@@ -78,7 +78,8 @@ async function runOAuth2Smoke({ browser, origin, ownerPage, ownerContext, fixtur
   await denied.page.getByRole('link', { name: '使用 OAuth2 验收 登录', exact: true }).click();
   const deniedCallback = denied.page.waitForResponse((response) => new URL(response.url()).pathname === '/oauth2/callback/smoke-oauth2');
   await denied.page.getByRole('link', { name: '确认 OAuth2 授权', exact: true }).click();
-  assert.equal((await deniedCallback).status(), 403);
+  assert.equal((await deniedCallback).status(), 303);
+  await denied.page.getByRole('heading', { name: '未能完成授权', exact: true }).waitFor();
   assert.equal((await snapshot(denied.context)).authenticated, false);
   await denied.context.close();
 
@@ -120,7 +121,8 @@ async function runOAuth2Smoke({ browser, origin, ownerPage, ownerContext, fixtur
   await malformed.page.getByRole('link', { name: '使用 OAuth2 验收 登录', exact: true }).click();
   const malformedCallback = malformed.page.waitForResponse((response) => new URL(response.url()).pathname === '/oauth2/callback/smoke-oauth2');
   await malformed.page.getByRole('link', { name: '确认 OAuth2 授权', exact: true }).click();
-  assert.equal((await malformedCallback).status(), 403);
+  assert.equal((await malformedCallback).status(), 303);
+  await malformed.page.getByRole('heading', { name: '未能完成授权', exact: true }).waitFor();
   assert.equal((await snapshot(malformed.context)).authenticated, false);
   assert.equal((await members()).users.length, before.users.length + 1);
   await malformed.context.close();

@@ -44,7 +44,7 @@ function launchDaemon(daemonArguments) {
 }
 function serve(request, response) {
   const pathname = new URL(request.url, origin).pathname;
-  if (/^\/(api|health|console|setup|oidc|oauth2)(\/|$)/.test(pathname) || pathname.startsWith('/register/')) {
+  if (/^\/(api|health|console|oidc|oauth2)(\/|$)/.test(pathname)) {
     const upstream = http.request(control + request.url, { method: request.method, headers: request.headers }, (result) => {
       response.writeHead(result.statusCode, result.headers); result.pipe(response);
     });
@@ -141,16 +141,14 @@ async function main() {
       assert.equal(response.statusCode, 200); response.resume(); response.once('end', resolve);
     }).once('error', reject);
   });
-  const setupPage = await api('/setup');
-  const markup = await setupPage.text();
-  const formMatch = /name="_csrf" value="([^"]+)"/.exec(markup);
-  console.log(JSON.stringify({ setupStatus: setupPage.status, csrfFormPresent: !!formMatch }));
-  assert.equal(setupPage.status, 200); assert.equal(!!formMatch, true);
-  const initialized = await backend('/setup', { method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ token: fs.readFileSync(path.join(state, 'portal/setup-token'), 'utf8').trim(),
-      _csrf: formMatch[1], login: 'authentication-owner', password, confirm: password }).toString() });
-  assert.equal(initialized.status, 302);
+  const setupPage = await backend('/api/v1/auth/setup');
+  const proof = (await setupPage.json()).csrf_token;
+  assert.equal(setupPage.status, 200); assert.ok(proof);
+  const initialized = await backend('/api/v1/auth/setup', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': proof },
+    body: JSON.stringify({ token: fs.readFileSync(path.join(state, 'portal/setup-token'), 'utf8').trim(),
+      login: 'authentication-owner', password, confirm: password }) });
+  assert.equal(initialized.status, 201);
   assert.equal((await api('/api/platform/v1/organizations/portal/plan', { plan_id: 'pro' }, 'PATCH')).status, 200);
   browser = await chromium.launch({ executablePath: process.env.CHROMIUM_BINARY || undefined, headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--no-proxy-server', '--host-resolver-rules=MAP *.example.test 127.0.0.1', '--ignore-certificate-errors-spki-list=' + spki] });

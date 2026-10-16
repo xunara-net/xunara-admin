@@ -58,7 +58,7 @@ async function unusedPort() {
 
 function serve(request, response) {
   const pathname = new URL(request.url, origin).pathname;
-  if (/^\/(api|health|console|setup|oidc|oauth2)(\/|$)/.test(pathname) || pathname.startsWith('/register/')) {
+  if (/^\/(api|health|console|oidc|oauth2)(\/|$)/.test(pathname)) {
     const upstream = http.request(control + request.url, {
       method: request.method, headers: { ...request.headers, host: new URL(origin).host },
     }, (result) => { response.writeHead(result.statusCode, result.headers); result.pipe(response); });
@@ -180,17 +180,15 @@ async function main() {
   mark('owner-bootstrap-claims-once-and-disarms-stale-proof');
   const freshMethods = await fetch(control + '/api/v1/auth/providers').then((response) => response.json());
   assert.equal(freshMethods.setup_required, true);
-  const markup = await fetch(control + '/setup').then((response) => response.text());
-  const formToken = /name="_csrf" value="([^"]+)"/.exec(markup)[1];
+  const setupState = await fetch(control + '/api/v1/auth/setup').then((response) => response.json());
+  const formToken = setupState.csrf_token;
   const setupProof = fs.readFileSync(path.join(state, 'setup-token'), 'utf8').trim();
-  const initialized = await fetch(control + '/setup', {
+  const initialized = await fetch(control + '/api/v1/auth/setup', {
     method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(10000),
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ token: setupProof,
-      _csrf: formToken, login: 'consolesmoke', display_name: '浏览器验收', email: 'same-email@example.invalid', password, confirm: password }),
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': formToken },
+    body: JSON.stringify({ token: setupProof, login: 'consolesmoke', display_name: '浏览器验收', email: 'same-email@example.invalid', password, confirm: password }),
   });
-  assert.equal(initialized.status, 302);
-  assert.equal(initialized.headers.get('location'), '/console/');
+  assert.equal(initialized.status, 201);
   const ownerCookie = initialized.headers.get('set-cookie').split(';', 1)[0];
   const ownerBefore = await fetch(control + '/api/v1/auth/session', { headers: { Cookie: ownerCookie } }).then((response) => response.json());
   assert.equal(ownerBefore.authenticated, true);
@@ -199,13 +197,12 @@ async function main() {
   assert.equal(fs.existsSync(path.join(state, 'setup-token')), false);
   // 残留文件不是认领权限；重放只去登录，不能覆盖 owner 或签发第二个初始化会话。
   fs.writeFileSync(path.join(state, 'setup-token'), setupProof + '\n', { mode: 0o600 });
-  const repeatedSetup = await fetch(control + '/setup', {
+  const repeatedSetup = await fetch(control + '/api/v1/auth/setup', {
     method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(10000),
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ token: setupProof, _csrf: formToken, login: 'replacement-owner', password, confirm: password }),
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': formToken },
+    body: JSON.stringify({ token: setupProof, login: 'replacement-owner', password, confirm: password }),
   });
-  assert.equal(repeatedSetup.status, 302);
-  assert.equal(repeatedSetup.headers.get('location'), '/login');
+  assert.equal(repeatedSetup.status, 409);
   assert.equal(repeatedSetup.headers.has('set-cookie'), false);
   const ownerAfter = await fetch(control + '/api/v1/auth/session', { headers: { Cookie: ownerCookie } }).then((response) => response.json());
   assert.deepEqual(ownerAfter.user, ownerBefore.user);
@@ -650,16 +647,18 @@ async function main() {
   assert.equal((await unboundContext.request.get(callbackURL, { maxRedirects: 0, headers: { Cookie: `${authBinding.name}=${authBinding.value}` } })).status(), 400);
   assert.equal(tokenExchanges, exchangesBeforeReplay);
 
-  mark('real-oidc-preserves-backend-device-authorization-target');
+  mark('real-oidc-preserves-modern-device-authorization-target');
   const deviceContext = await browser.newContext();
   const devicePage = await deviceContext.newPage();
   devicePage.on('pageerror', (error) => pageErrors.push(error.name));
   await devicePage.goto(origin + '/login?return_to=' + encodeURIComponent('/register/oidc-browser-target'));
   await devicePage.getByRole('link', { name: '使用 smoke-oidc 登录', exact: true }).click();
-  const deviceResponse = devicePage.waitForResponse((response) => new URL(response.url()).pathname === '/register/oidc-browser-target');
+  const deviceResponse = devicePage.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/browser/device-authorizations/oidc-browser-target');
   await devicePage.getByRole('link', { name: '确认登录', exact: true }).click();
   assert.equal((await deviceResponse).status(), 404);
   await devicePage.waitForURL(origin + '/register/oidc-browser-target');
+  await devicePage.getByRole('alert').waitFor();
+  assert.equal(await devicePage.locator('form[method="post"]').count(), 0);
 
   mark('real-oidc-rejects-invalid-rsa-signature-and-nonce');
   for (const mode of ['signature', 'nonce']) {
@@ -670,7 +669,8 @@ async function main() {
     await rejectedPage.getByRole('link', { name: '使用 smoke-oidc 登录', exact: true }).click();
     const rejectedCallback = rejectedPage.waitForResponse((response) => new URL(response.url()).pathname === '/oidc/callback/smoke-oidc');
     await rejectedPage.getByRole('link', { name: '确认登录', exact: true }).click();
-    assert.equal((await rejectedCallback).status(), 403);
+    assert.equal((await rejectedCallback).status(), 303);
+    await rejectedPage.getByRole('heading', { name: '未能完成授权', exact: true }).waitFor();
     assert.equal((await rejectedContext.request.get(origin + '/api/v1/auth/session').then((response) => response.json())).authenticated, false);
     await rejectedContext.close();
   }
